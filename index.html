@@ -1680,7 +1680,7 @@ form button:disabled,form input:disabled{opacity:.5;cursor:not-allowed}
 /* ---------------------------------------------------------------------
    1 · Config & constants
    --------------------------------------------------------------------- */
-const VOID = { version: '0.2', build: '0.2.3', protocol: '1' };
+const VOID = { version: '0.2', build: '0.2.4', protocol: '1' };
 
 /* The official Void address (GitHub Pages). Games put it in the kit's voidUrl. */
 const VOID_HOME = 'https://heyimdroid.github.io/void_host-/';
@@ -1931,6 +1931,79 @@ function html(strings, ...vals) {
   for (let i = 0; i < vals.length; i++) out += fmtv(vals[i]) + strings[i + 1];
   return new Raw(out);
 }
+
+/* Small synchronous SHA-256 for short ASCII strings (identity stamps). Returns the first 32-bit word. */
+const SHA_K = new Uint32Array([0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
+const SHA_W = new Uint32Array(64);
+function sha256Head(str) {
+  const n = str.length, blocks = ((n + 8) >> 6) + 1, W = SHA_W;
+  let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a, h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+  for (let b = 0; b < blocks; b++) {
+    for (let i = 0; i < 16; i++) {
+      let w = 0;
+      for (let j = 0; j < 4; j++) { const p = b * 64 + i * 4 + j; w = (w << 8) | (p < n ? str.charCodeAt(p) & 255 : p === n ? 0x80 : 0); }
+      W[i] = w;
+    }
+    if (b === blocks - 1) { W[14] = Math.floor(n / 0x20000000); W[15] = (n * 8) >>> 0; }
+    for (let i = 16; i < 64; i++) {
+      const x = W[i - 15], y = W[i - 2];
+      W[i] = (((x >>> 7 | x << 25) ^ (x >>> 18 | x << 14) ^ (x >>> 3)) + W[i - 7] + ((y >>> 17 | y << 15) ^ (y >>> 19 | y << 13) ^ (y >>> 10)) + W[i - 16]) | 0;
+    }
+    let a = h0, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7, bb = h1;
+    for (let i = 0; i < 64; i++) {
+      const t1 = (h + ((e >>> 6 | e << 26) ^ (e >>> 11 | e << 21) ^ (e >>> 25 | e << 7)) + ((e & f) ^ (~e & g)) + SHA_K[i] + W[i]) | 0;
+      const t2 = (((a >>> 2 | a << 30) ^ (a >>> 13 | a << 19) ^ (a >>> 22 | a << 10)) + ((a & bb) ^ (a & c) ^ (bb & c))) | 0;
+      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = bb; bb = a; a = (t1 + t2) | 0;
+    }
+    h0 = (h0 + a) | 0; h1 = (h1 + bb) | 0; h2 = (h2 + c) | 0; h3 = (h3 + d) | 0; h4 = (h4 + e) | 0; h5 = (h5 + f) | 0; h6 = (h6 + g) | 0; h7 = (h7 + h) | 0;
+  }
+  return h0 >>> 0;
+}
+
+/* Identity stamp: a one-time proof of work (about 8 million hashes) that makes throwaway identities cost
+   real time. Votes to kick and wiki votes only count from stamped identities. */
+const STAMP_BITS = 23;
+const Stamp = {
+  cache: new Map(), job: null,
+  ok(id, nonce) { return (sha256Head('void-stamp/v1:' + id + ':' + nonce) >>> (32 - STAMP_BITS)) === 0; },
+  valid(id, nonce) {
+    if (typeof id !== 'string' || typeof nonce !== 'string' || !nonce || nonce.length > 12) return false;
+    const k = id + ':' + nonce;
+    let v = this.cache.get(k);
+    if (v === undefined) { v = this.ok(id, nonce); if (this.cache.size > 5000) this.cache.clear(); this.cache.set(k, v); }
+    return v;
+  },
+  mine() { return Me.profile && this.valid(Me.id, Me.profile.stamp) ? Me.profile.stamp : null; },
+  ready() {
+    if (this.mine()) return Promise.resolve(this.mine());
+    if (!Me.profile) return Promise.resolve(null);
+    if (this.job && this.job.id === Me.id) return this.job.p;
+    const id = Me.id;
+    let n = Math.floor(Math.random() * 1e9);
+    const p = new Promise(res => {
+      const step = () => {
+        if (Me.id !== id) { res(null); return; }
+        const end = performance.now() + 25;
+        while (performance.now() < end) {
+          for (let i = 0; i < 2000; i++, n++) {
+            const s = n.toString(36);
+            if (this.ok(id, s)) { Me.update({ stamp: s }); res(s); return; }
+          }
+        }
+        setTimeout(step, 0);
+      };
+      setTimeout(step, 0);
+    });
+    this.job = { id, p };
+    return p;
+  },
+  /* Waits for the stamp, telling the person if it isn't ready yet. */
+  async need(what) {
+    if (this.mine()) return this.mine();
+    toastOnce('stamp', { title: 'Getting ready…', body: `Void is finishing a one-time check on your profile before you can ${what}. This takes a few seconds.`, icon: 'shield' });
+    return this.ready();
+  },
+};
 
 /* Render batching: state changes mark scopes dirty; the UI refreshes once per frame. */
 const dirty = new Set();
@@ -2556,7 +2629,7 @@ const linkHTML = (url, label) => `<a href="${esc(url)}" target="_blank" rel="noo
 function renderInline(text, o = {}) {
   const slots = [];
   const hold = h => '\u0000' + (slots.push(h) - 1) + '\u0000';
-  let s = String(text);
+  let s = String(text).replace(/\u0000/g, '');
   s = s.replace(/`([^`\n]+)`/g, (_, c) => hold('<code>' + esc(c) + '</code>'));
   /* Wiki page links: [text](#section) render with their brackets, in light violet. */
   if (o.wiki) s = s.replace(/\[([^\]\n]{1,120})\]\(#([\w-]{1,40})\)/g, (_, label, sid) => {
@@ -2933,6 +3006,10 @@ const Wiki = {
     const evs = this.log.events().filter(e => e.gid === gid);
     for (const e of Mod.log.events()) if ((e.t.startsWith('mod.wiki.') && e.gid === gid) || (e.t === 'mod.settings' && 'strictVotes' in e)) evs.push(e);
     evs.sort((a, b) => a.ts - b.ts || (a.id < b.id ? -1 : 1));
+    /* A lock records the wiki events that existed when it was set. Community events dated before the lock
+       that it didn't know about were backdated, so they are ignored. */
+    const locks = evs.filter(e => e.t === 'mod.wiki.lock' && e.on && Array.isArray(e.known)).map(e => ({ ts: e.ts, known: new Set(e.known) }));
+    const backdated = e => !e._mod && (e.t === 'wiki.propose' || e.t === 'wiki.vote') && locks.some(l => e.ts < l.ts && !l.known.has(e.id));
     const find = sid => sections.find(s => s.id === sid);
     const apply = (p, ts, byMod) => {
       const rev = { id: p.id, title: p.title, body: p.body, ts, by: p.by, name: p.name, summary: p.summary, pid: p.id };
@@ -2957,6 +3034,7 @@ const Wiki = {
     const reject = (p, ts, byMod) => { p.status = 'rejected'; p.resolvedAt = ts; p.byMod = !!byMod; };
     const settle = (p, ts) => { p.score = this.score(p, strict); if (p.score >= 3) apply(p, ts, false); else if (p.score <= -3) reject(p, ts, false); };
     for (const ev of evs) {
+      if (backdated(ev)) continue;
       switch (ev.t) {
         case 'mod.settings': strict = !!ev.strictVotes; for (const p of props.values()) if (p.status === 'open') settle(p, ev.ts); break;
         case 'mod.wiki.lock': locked = !!ev.on; break;
@@ -2974,6 +3052,7 @@ const Wiki = {
         case 'wiki.vote': {
           const p = props.get(ev.pid);
           if (!p || p.status !== 'open' || ev.by === p.by) break;
+          if (!ev._mod && (locked || !Stamp.valid(ev.by, ev.stamp))) break;
           const v = ev.v > 0 ? 1 : ev.v < 0 ? -1 : 0;
           if (v) p.votes.set(ev.by, { v, name: cleanLine(ev.name, LIMITS.name) || 'Someone', dev: typeof ev.dev === 'string' ? ev.dev : '', ts: ev.ts });
           else p.votes.delete(ev.by);
@@ -3041,7 +3120,11 @@ const Wiki = {
     Session.check('wiki');
     return payload.id;
   },
-  async vote(gid, pid, v) { await Net.send({ t: 'wiki.vote', gid, pid, v, name: Me.profile.name, dev: Device.id }, { mod: false }); Session.check('wiki'); },
+  async vote(gid, pid, v) {
+    const stamp = await Stamp.need('vote');
+    if (!stamp) throw new Error('Your profile changed before the vote was sent.');
+    await Net.send({ t: 'wiki.vote', gid, pid, v, name: Me.profile.name, dev: Device.id, stamp }, { mod: false }); Session.check('wiki');
+  },
   async decide(gid, pid, decision) { return modAct({ t: 'mod.wiki.decide', gid, pid, decision }, decision === 'approve' ? 'Change applied' : 'Proposal removed'); },
   openTotal() { let n = 0; for (const g of Games.list()) { const w = this.get(g.id); if (w) n += w.open.length; } return n; },
 };
@@ -3127,9 +3210,25 @@ function sanitizePresence(ev) {
     bio: cleanText(ev.bio, LIMITS.bio), pronouns: cleanLine(ev.pronouns, LIMITS.pronouns), custom: cleanLine(ev.custom, LIMITS.custom),
     status: ['online', 'away', 'dnd'].includes(ev.status) ? ev.status : 'online', since: Number(ev.since) || ev.ts,
     dh: typeof ev.dh === 'string' && ev.dh.length < 200 ? ev.dh : null, dev: typeof ev.dev === 'string' ? ev.dev.slice(0, 24) : '',
+    stamped: Stamp.valid(ev.by, ev.stamp),
     dm: ev.dm === 'none' ? 'none' : 'all', rooms: arr(ev.rooms).filter(r => typeof r === 'string' && /^[a-z0-9]{6,20}$/.test(r)).slice(0, 20), game: g,
   };
 }
+/* Two different people online with the same name and #tag: show a warning on both. */
+const LookAlike = {
+  v: -1, map: new Map(),
+  key: (name, id) => String(name || '').toLowerCase() + '#' + tagOf(id),
+  build() {
+    if (this.v === Presence.ver) return;
+    this.v = Presence.ver; this.map = new Map();
+    const add = (name, id) => { const k = this.key(name, id); const s = this.map.get(k) || new Set(); s.add(id); this.map.set(k, s); };
+    for (const r of Presence.map.values()) add(r.p.name, r.p.id);
+    if (Me.profile) add(Me.profile.name, Me.id);
+  },
+  is(id, name) { if (!id) return false; this.build(); const s = this.map.get(this.key(name, id)); return !!s && (s.size > 1 || !s.has(id)); },
+  badge(id, name) { return this.is(id, name) ? html`<span class="badge warn" title="Someone else online has the same name and #tag. Check the ID on their profile.">Look-alike</span>` : ''; },
+};
+const fingerprint = id => String(id || '').slice(1, 9);
 function userInfo(id) {
   if (id === Me.id) return { id, name: Me.profile.name, tag: Me.profile.tag, av: Me.profile.av, online: true, status: Me.status(), mod: Admin.active, bio: Me.profile.bio, pronouns: Me.profile.pronouns, custom: Me.profile.custom, since: Me.profile.created, game: Me.game };
   const p = Presence.get(id);
@@ -3140,8 +3239,10 @@ function userInfo(id) {
 }
 const Presence = {
   map: new Map(), byeEnv: null,
+  ver: 0,
   start() {
     this.announce();
+    Stamp.ready();
     setInterval(() => this.announce(), PRESENCE_EVERY);
     setInterval(() => this.sweep(), 5000);
     window.addEventListener('pagehide', () => this.bye());
@@ -3149,10 +3250,11 @@ const Presence = {
   announceSoon: debounce(() => Presence.announce(), 250),
   async announce() {
     if (!Me.profile) return;
+    Stamp.ready();
     const p = Me.profile;
     const payload = {
       t: 'presence', name: p.name, av: p.av, bio: p.bio, pronouns: p.pronouns, custom: p.custom, status: Me.status(), since: p.created,
-      dh: Me.keys.dhPub, dev: Device.id, dm: Settings.dmPolicy, rooms: [...Rooms.joined].slice(0, 20), inst: Net.inst,
+      dh: Me.keys.dhPub, dev: Device.id, dm: Settings.dmPolicy, stamp: Stamp.mine(), rooms: [...Rooms.joined].slice(0, 20), inst: Net.inst,
       game: Settings.showGame && Me.game ? { id: Me.game.id, details: Me.game.details || '', state: Me.game.state || '', since: Me.game.since } : null,
     };
     try { await Net.send(payload); this.byeEnv = await Net.sign({ t: 'bye' }, { mod: false }); }
@@ -3169,17 +3271,22 @@ const Presence = {
     if (prev && prev.p.ts > ev.ts) return;
     const p = sanitizePresence(ev);
     const e = Object.assign({}, env); delete e.h;
-    this.map.set(ev.by, { p, seen: now(), env: e, local: src === 'bc' || src === 'self', mod: !!ev._mod });
+    /* When this browser first saw them in each thread (used by votes to kick). */
+    const rs = {};
+    for (const r of p.rooms) rs[r] = (prev && prev.rs && prev.rs[r]) || now();
+    this.map.set(ev.by, { p, seen: now(), env: e, local: src === 'bc' || src === 'self', mod: !!ev._mod, rs });
+    this.ver++;
     Known.set(p.id, { id: p.id, name: p.name, tag: p.tag, av: p.av, bio: p.bio, pronouns: p.pronouns });
     Threads.touchInfo(p.id, p);
     invalidate('presence');
   },
-  onBye(ev) { const r = this.map.get(ev.by); if (r && ev.by !== Me.id && r.p.ts <= ev.ts) { this.map.delete(ev.by); invalidate('presence'); } },
+  onBye(ev) { const r = this.map.get(ev.by); if (r && ev.by !== Me.id && r.p.ts <= ev.ts) { this.map.delete(ev.by); this.ver++; invalidate('presence'); } },
+  inRoomSince(id, rid) { const r = this.map.get(id); return r && r.rs && r.p.rooms.includes(rid) ? r.rs[rid] : null; },
   sweep() {
     const cut = now() - PRESENCE_TTL;
     let changed = false;
     for (const [id, r] of this.map) if (id !== Me.id && r.seen < cut) { this.map.delete(id); changed = true; }
-    if (changed) invalidate('presence');
+    if (changed) { this.ver++; invalidate('presence'); }
   },
   get(id) { const r = this.map.get(id); return r ? r.p : null; },
   rec(id) { return this.map.get(id) || null; },
@@ -3194,13 +3301,14 @@ const Presence = {
 /* Receiver-side flood protection for live public traffic. */
 const Flood = {
   b: new Map(),
+  /* Counted by arrival time. Older messages (history from sync) get a separate, larger allowance. */
   ok(id, ts) {
-    if (now() - ts > 30000) return true;
-    const t = now();
-    let x = this.b.get(id);
-    if (!x) { x = { n: 0, t }; this.b.set(id, x); }
+    const old = now() - ts > 30000, k = (old ? 'h:' : '') + id, t = now();
+    let x = this.b.get(k);
+    if (!x) { x = { n: 0, t }; this.b.set(k, x); }
     x.n = Math.max(0, x.n - ((t - x.t) / 1000) * 1.5) + 1; x.t = t;
-    return x.n <= 15;
+    if (this.b.size > 5000) for (const [kk, y] of this.b) if (t - y.t > 60000) this.b.delete(kk);
+    return x.n <= (old ? 120 : 15);
   },
 };
 const ChatViews = new Set();
@@ -3622,12 +3730,17 @@ const Threads = {
       if (!cid.startsWith('P:')) return;
       const members = [...new Set(arr(inner.members).filter(x => typeof x === 'string' && /^u[\w-]{15}$/.test(x)))].slice(0, LIMITS.groupMax);
       if (!members.includes(Me.id) || !members.includes(sender) || (t && t.left)) return;
+      /* Only people already in the thread can change it, and a change can only add people. */
+      if (t && !t.members.includes(sender)) return;
       if (fresh && sender !== Me.id && Settings.dmPolicy === 'none') return;
       const info = {};
-      for (const id of members) { const x = inner.info && inner.info[id]; info[id] = { name: cleanLine(x && x.name, LIMITS.name) || 'Someone', av: sanitizeAv(x && x.av) }; }
+      for (const id of members) {
+        if (t && t.members.includes(id) && id !== sender && t.info[id]) continue;
+        const x = inner.info && inner.info[id]; info[id] = { name: cleanLine(x && x.name, LIMITS.name) || 'Someone', av: sanitizeAv(x && x.av) };
+      }
       if (!t) { t = { cid, kind: 'group', name: '', members, info, by: sender, ts: ev.ts, left: false }; this.map.set(cid, t); }
       const before = new Set(t.members), oldName = t.name;
-      t.members = members; t.name = cleanLine(inner.name, 40); Object.assign(t.info, info);
+      t.members = [...new Set([...t.members, ...members])].slice(0, LIMITS.groupMax); t.name = cleanLine(inner.name, 40); Object.assign(t.info, info);
       if (sender !== Me.id) {
         const who = info[sender].name;
         if (fresh) { Chat.addSystem(cid, `${who} added you to this private chat. Messages are end-to-end encrypted.`, ev.ts); Notify.thread(t, who); }
@@ -4156,19 +4269,28 @@ Net.on('room.close', ev => Rooms.onClose(ev));
    result; the kicked person's window shows a "you've been kicked" page and wipes the session.
    --------------------------------------------------------------------- */
 const KICK_WINDOW = 120000;
+const KICK_SETTLE = 120000;        // voters must have been seen in the thread this long
 const Kick = {
   votes: new Map(), kicked: new Set(), envs_: new Map(), lastStart: 0, timer: null,
   isKicked(uid) { return this.kicked.has(uid); },
   viewRoom() { const r = Router.route; return r && r.cid && r.cid[0] === 'R' ? r.cid.slice(2) : null; },
   canStartFor(uid) { const rid = this.viewRoom(); return !!rid && uid !== Me.id && Rooms.joined.has(rid) && Presence.inRoom(rid).some(p => p.id === uid); },
+  /* Who may vote, as this browser sees it: stamped people announced in the thread for 2+ minutes.
+     The list in the vote itself is ignored, so nobody can pick their own voters. */
+  eligibleFor(rid, target) {
+    const cut = now() - KICK_SETTLE;
+    return Presence.inRoom(rid).filter(p => p.id !== target && p.stamped && (Presence.inRoomSince(p.id, rid) || Infinity) <= cut).map(p => p.id).slice(0, 50);
+  },
   open(rid) { return [...this.votes.values()].filter(v => v.status === 'open' && (!rid || v.rid === rid)); },
   need(n) { return Math.max(2, Math.ceil(n / 2)); },
   async ask(uid) {
     const rid = this.viewRoom(), r = rid && Rooms.known.get(rid);
     if (!r || !this.canStartFor(uid)) return;
     const u = userInfo(uid);
-    const eligible = Presence.inRoom(rid).map(p => p.id).filter(id => id !== uid).slice(0, 50);
-    if (eligible.length < 2) { toast({ title: 'Not enough people for a vote', body: 'A vote to kick needs at least 2 other people in the thread.', tone: 'warn', icon: 'users' }); return; }
+    if (!(await Stamp.need('start a vote'))) return;
+    if (!this.eligibleFor(rid, uid).includes(Me.id)) { toast({ title: 'Not yet', body: 'You can start a vote to kick after you\'ve been in this thread for 2 minutes.', tone: 'warn', icon: 'door' }); return; }
+    const eligible = this.eligibleFor(rid, uid);
+    if (eligible.length < 2) { toast({ title: 'Not enough people for a vote', body: 'A vote to kick needs at least 2 other people who have been in the thread for 2 minutes.', tone: 'warn', icon: 'users' }); return; }
     if (this.open(rid).length) { toast({ title: 'A vote is already running here', tone: 'warn', icon: 'door' }); return; }
     const wait = this.lastStart + KICK_WINDOW - now();
     if (wait > 0) { toast({ title: 'Please wait before starting another vote', body: `You can start a new one in ${Math.ceil(wait / 1000)}s.`, tone: 'warn' }); return; }
@@ -4184,7 +4306,11 @@ const Kick = {
     const uidRe = /^u[\w-]{15}$/;
     if (this.votes.has(ev.id) || typeof ev.rid !== 'string' || !uidRe.test(ev.target || '') || ev.target === ev.by) return;
     if (ev.ts < now() - KICK_WINDOW || Mod.banOf(ev.by)) return;
-    const eligible = [...new Set(arr(ev.eligible).filter(x => typeof x === 'string' && uidRe.test(x) && x !== ev.target))].slice(0, 50);
+    const room = Rooms.known.get(ev.rid);
+    if (!room || room.closed) return;
+    const targetHere = ev.target === Me.id ? Rooms.joined.has(ev.rid) : Presence.inRoom(ev.rid).some(p => p.id === ev.target);
+    if (!targetHere) return;
+    const eligible = this.eligibleFor(ev.rid, ev.target);
     if (eligible.length < 2 || !eligible.includes(ev.by)) return;
     if (this.open(ev.rid).length) return;
     const v = { vid: ev.id, rid: ev.rid, room: cleanLine(ev.room, LIMITS.roomName) || 'a thread', target: ev.target, targetName: cleanLine(ev.targetName, LIMITS.name) || 'Someone', by: ev.by, byName: cleanLine(ev.name, LIMITS.name) || 'Someone', eligible: new Set(eligible), need: this.need(eligible.length), ts: ev.ts, yes: new Set([ev.by]), no: new Set(), status: 'open' };
@@ -4737,7 +4863,7 @@ function memberRow(p) {
   const st = p.id === Me.id ? Me.status() : p.online === false ? 'offline' : p.status;
   const g = p.game && Games.get(p.game.id);
   const sub = g ? `Playing ${g.name}${p.game.details ? ' · ' + p.game.details : ''}` : p.custom || '';
-  return html`<button class="member ${st === 'away' || st === 'offline' ? 'away' : ''}" data-act="profile" data-uid="${p.id}" data-fk="m-${p.id}">${avatar(p.av, 'sm', st)}<span class="member-text"><span class="member-name"><span>${p.name}</span>${p.mod ? html`<span class="badge mod">Mod</span>` : ''}${p.id === Me.id ? html`<span class="badge">You</span>` : ''}</span>${sub ? html`<span class="member-sub">${sub}</span>` : ''}</span></button>`;
+  return html`<button class="member ${st === 'away' || st === 'offline' ? 'away' : ''}" data-act="profile" data-uid="${p.id}" data-fk="m-${p.id}">${avatar(p.av, 'sm', st)}<span class="member-text"><span class="member-name"><span>${p.name}</span>${p.mod ? html`<span class="badge mod">Mod</span>` : ''}${p.id === Me.id ? html`<span class="badge">You</span>` : ''}${LookAlike.badge(p.id, p.name)}</span>${sub ? html`<span class="member-sub">${sub}</span>` : ''}</span></button>`;
 }
 const byPresence = (a, b) => { const o = { online: 0, dnd: 1, away: 2, offline: 3 }; return (o[a.status] ?? 3) - (o[b.status] ?? 3) || a.name.localeCompare(b.name); };
 function renderAside() {
@@ -5267,7 +5393,7 @@ class ChatView {
       ${m.reply ? html`<div class="msg-reply" data-act="jumpTo" data-mid="${m.reply}">${parent ? html`${avatar(parent.av, 'xs')}<b>${parent.name}</b><span class="rtext">${stripMd(Mod.filter(parent.text)).slice(0, 140)}</span>` : html`<span class="rtext">Original message isn't available</span>`}</div>` : ''}
       <div class="msg-gut">${cont ? html`<span class="msg-time-gut" title="${fmtFull(m.ts)}">${fmtTime(m.ts)}</span>` : html`<span data-act="profile" data-uid="${m.by}" aria-hidden="true">${avatar(m.av, this.compact ? 'sm' : 'md')}</span>`}</div>
       <div class="msg-main">
-        ${cont ? '' : html`<div class="msg-head"><span class="msg-name" data-act="profile" data-uid="${m.by}" role="button" tabindex="0">${m.name}</span>${m.mod ? html`<span class="badge mod" title="Moderator">Mod</span>` : ''}${m.via ? html`<span class="badge via" title="Sent from inside the game">via ${Games.name(m.via)}</span>` : m.game && this.cid[0] !== 'G' ? html`<span class="badge via" title="Playing ${Games.name(m.game)}">🎮 ${Games.name(m.game)}</span>` : ''}<span class="msg-time" title="${fmtFull(m.ts)}">${fmtStamp(m.ts)}</span></div>`}
+        ${cont ? '' : html`<div class="msg-head"><span class="msg-name" data-act="profile" data-uid="${m.by}" role="button" tabindex="0">${m.name}</span>${m.mod ? html`<span class="badge mod" title="Moderator">Mod</span>` : ''}${LookAlike.badge(m.by, m.name)}${m.via ? html`<span class="badge via" title="Sent from inside the game">via ${Games.name(m.via)}</span>` : m.game && this.cid[0] !== 'G' ? html`<span class="badge via" title="Playing ${Games.name(m.game)}">🎮 ${Games.name(m.game)}</span>` : ''}<span class="msg-time" title="${fmtFull(m.ts)}">${fmtStamp(m.ts)}</span></div>`}
         <div class="msg-text md">${raw(renderChat(m.text))}${m.edited ? html` <span class="msg-edited" title="Edited ${fmtFull(m.edited)}">(edited)</span>` : ''}</div>
         ${reacts.length ? html`<div class="reacts">${reacts.map(([e, set]) => html`<button class="react ${set.has(Me.id) ? 'mine' : ''}" data-act="toggleReact" data-mid="${m.id}" data-e="${e}" data-tip="${reactNames(set)}" aria-pressed="${set.has(Me.id)}" aria-label="${e} reaction, ${set.size}">${e} ${set.size}</button>`)}<button class="react add" data-act="reactPick" data-mid="${m.id}" aria-label="Add reaction">${icon('smile', 14)}</button></div>` : ''}
       </div>
@@ -5636,7 +5762,7 @@ function openNewRoom(gid) {
     let password = null;
     if (lock.checked) {
       const p1 = $('#nr-p1', m.el).value, p2 = $('#nr-p2', m.el).value;
-      if (p1.length < 4) return err('Use a password with at least 4 characters.');
+      if (p1.length < 8) return err('Use a password with at least 8 characters. Anyone can try passwords against a locked thread on their own computer, so longer is safer.');
       if (p1 !== p2) return err("The passwords don't match.");
       password = p1;
     }
@@ -5867,7 +5993,12 @@ Object.assign(Actions, {
     if (!(await confirmBox({ title: d === 'approve' ? 'Publish this change now?' : 'Delete this proposal now?', text: 'Moderator decisions skip the vote and are recorded in the audit log.', ok: d === 'approve' ? 'Publish' : 'Delete', danger: d !== 'approve' }))) return;
     Wiki.decide(t.dataset.gid, t.dataset.pid, d);
   },
-  wikiLock: async t => { const w = Wiki.get(t.dataset.gid); modAct({ t: 'mod.wiki.lock', gid: t.dataset.gid, on: !w.locked }, w.locked ? 'Wiki unlocked' : 'Wiki locked'); },
+  wikiLock: async t => {
+    const gid = t.dataset.gid, w = Wiki.get(gid);
+    const ev = { t: 'mod.wiki.lock', gid, on: !w.locked };
+    if (ev.on) ev.known = Wiki.log.events().filter(e => e.gid === gid).map(e => e.id).slice(-2500);
+    modAct(ev, w.locked ? 'Wiki unlocked' : 'Wiki locked');
+  },
   wikiRevert: async t => {
     const { gid, sid, rev } = t.dataset;
     if (!(await confirmBox({ title: 'Restore this version?', text: 'The section will go back to this version right away. This is recorded in the audit log.', ok: 'Restore' }))) return;
@@ -5887,7 +6018,7 @@ function openProfile(anchor, id) {
     <div class="pcard-banner"></div>
     <div class="pcard-top">${avatar(u.av, 'xl', st)}${me ? html`<button class="btn sm" data-pa="edit" style="margin-bottom:6px">${icon('edit', 14)} Edit profile</button>` : ''}</div>
     <div class="pcard-body">
-      <div><div class="pcard-name">${u.name}<span class="pcard-tag">#${u.tag}</span>${u.mod ? html`<span class="badge mod">Mod</span>` : ''}${Session.isBlocked(id) ? html`<span class="badge bad">Blocked</span>` : ''}</div>${u.pronouns ? html`<div class="muted small">${u.pronouns}</div>` : ''}</div>
+      <div><div class="pcard-name">${u.name}<span class="pcard-tag">#${u.tag}</span>${u.mod ? html`<span class="badge mod">Mod</span>` : ''}${Session.isBlocked(id) ? html`<span class="badge bad">Blocked</span>` : ''}${LookAlike.badge(id, u.name)}</div>${u.pronouns ? html`<div class="muted small">${u.pronouns}</div>` : ''}<div class="tiny muted mono" title="A short code from this person's key. Two people can share a name and #tag, but not this ID.">ID ${fingerprint(id)}</div></div>
       ${u.custom ? html`<div class="dim small">${u.custom}</div>` : ''}
       ${g ? html`<div class="pcard-sec"><h4>Playing</h4><div class="playing"><span class="gi" style="--g:${Games.gradient(g)}">${g.icon}</span><div style="min-width:0"><b>${g.name}</b>${u.game.details ? html`<div class="small dim">${u.game.details}</div>` : ''}${u.game.state ? html`<div class="small muted">${u.game.state}</div>` : ''}</div></div></div>` : ''}
       ${u.bio ? html`<div class="pcard-sec"><h4>About</h4><div class="md small">${raw(renderInline(u.bio))}</div></div>` : ''}
