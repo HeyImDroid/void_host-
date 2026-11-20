@@ -263,6 +263,15 @@ p { margin: 0; }
 .badge.accent { background: var(--accent-soft); color: var(--accent-text); }
 .badge.via { background: transparent; border: 1px solid var(--line-2); color: var(--text-3); text-transform: none; letter-spacing: 0; font-weight: 650; font-size: .68rem; }
 .tag { display: inline-block; padding: 2px 8px; border-radius: 999px; background: var(--bg-4); color: var(--text-2); font-size: .74rem; font-weight: 650; white-space: nowrap; }
+.safety { display: flex; align-items: center; gap: 10px; margin: 0 16px; padding: 7px 10px 7px 12px; border-radius: 10px; background: color-mix(in srgb, #16a34a 9%, transparent); border: 1px solid color-mix(in srgb, #16a34a 28%, transparent); font-size: .82rem; color: var(--text-2); }
+.safety > svg { flex: none; color: #16a34a; }
+.safety-text { flex: 1; min-width: 0; line-height: 1.35; }
+.safety-text b { color: var(--text); font-weight: 650; }
+.safety .ibtn, .safety .btn { flex: none; }
+.safety-min { display: inline-flex; align-items: center; gap: 6px; margin: 0 16px; padding: 3px 9px; border-radius: 999px; font-size: .74rem; color: var(--text-3); background: transparent; border: 1px solid color-mix(in srgb, var(--text-3) 35%, transparent); cursor: pointer; align-self: flex-start; font: inherit; font-size: .74rem; }
+.safety-min:hover { color: var(--text-2); }
+.safety-min svg { color: #16a34a; }
+@media (max-width: 640px) { .safety, .safety-min { margin: 0 10px; } .safety { flex-wrap: wrap; } }
 .callout { display: flex; gap: 12px; padding: 12px 14px; border-radius: var(--r); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); font-size: .9rem; align-items: flex-start; }
 .callout > svg { flex: none; margin-top: 2px; color: var(--accent-text); }
 .callout.warn { background: color-mix(in srgb, var(--warn) 10%, transparent); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
@@ -1199,6 +1208,8 @@ The Connection Kit is the only code Void accepts a game connection from:
 3. **Protected from your game's own code.** The kit saves the browser built-ins it needs (hashing, randomness, messaging, timers) the moment it loads. Code that runs later and changes those built-ins can't break or redirect it. That's why the kit must load first.
 4. **Origin check.** Void only accepts the kit from your listed website's origin, or from the origins of the links on your game page.
 
+**Suspicious kit alerts.** If a Void window inside a game sees a kit fail these checks (a modified kit, forged or replayed messages, or kit traffic from a website that isn't listed for your game), it sends a sealed alert that only Void moderators can read. Moderators are notified while it's active. Testing in the Sandbox never sends alerts.
+
 **What this can't do:** no browser-only system can stop someone who deliberately copies the untouched kit text into their own code, because their browser is fully under their control. The checks above make tampering obvious and break it. Moderator review is the final safeguard.
 
 ## Raw protocol
@@ -1231,7 +1242,7 @@ Messages are plain objects: `{ void: '1', type, id, gameId, data, seq, mac }`. T
 
 **Can I restyle the Void window?** You can set its size, but the kit itself must stay unchanged.
 
-**Does Void need a server?** No. Each Void window connects to the other Void windows in the same browser, and to other devices through *Direct Link*. Browsers keep embedded pages separate per website, so a Void window inside your game reaches other windows of your game in that browser and anyone linked with Direct Link.
+**Does Void need a server?** Not to work, but a relay makes it much better. Without one, each Void window reaches the other Void windows in the same browser, and other devices through *Direct Link*. Browsers keep embedded pages separate per website, so a Void window inside your game would only reach other windows of your game in that browser. With a relay set up (see the `void-relay` folder), every Void window, including the ones inside games, reaches everyone. The relay only forwards signed messages and can't forge or read private chats.
 
 **Something isn't working.** Load your game in the Sandbox and read the console. A modified kit shows the error code `kit_modified`.
 </script>
@@ -1650,7 +1661,12 @@ form button:disabled,form input:disabled{opacity:.5;cursor:not-allowed}
 /* ---------------------------------------------------------------------
    1 · Config & constants
    --------------------------------------------------------------------- */
-const VOID = { version: '0.1', build: '0.1.0', protocol: '1' };
+const VOID = { version: '0.2', build: '0.2.0', protocol: '1' };
+
+/* Relay: your own WebSocket relay (the Cloudflare Worker in void-relay/). Put its address here, e.g.
+   'wss://void-relay.your-name.workers.dev'. Every copy of this file, including the Void windows
+   inside games, connects to it automatically. Leave it empty to run without a relay. */
+const RELAY_DEFAULT = 'wss://void-relay.voidhost.workers.dev';
 
 /* Moderator credentials. The password itself is never stored anywhere.
    kdf + verifier: PBKDF2-SHA-256 (310,000 iterations, random salt). The first 32 bytes of the
@@ -1943,7 +1959,7 @@ const Device = (() => {
 
 const DEFAULTS = {
   theme: 'dark', accent: 'violet', density: 'cozy', fontSize: 'md', reduceMotion: false, clock24: false,
-  sounds: true, desktop: false, previews: true, showGame: true, members: true, stun: true, confirmLinks: true,
+  sounds: true, desktop: false, previews: true, dmPolicy: 'all', showGame: true, members: true, stun: true, confirmLinks: true, relayUrl: '', relayOff: false,
 };
 const Settings = Object.assign({}, DEFAULTS, Store.ls.get(K.settings, {}) || {});
 function applySettings() {
@@ -2073,6 +2089,22 @@ async function openSealed(sealed) {
   } catch (e) { return null; }
 }
 
+/* Pairwise keys for private threads (ECDH between two profiles, cached). */
+const PairKeys = new Map();
+function pairKey(otherId, otherPub) {
+  const k = otherId + '|' + otherPub;
+  let pr = PairKeys.get(k);
+  if (!pr) {
+    pr = (async () => {
+      const bits = await subtle.deriveBits({ name: 'ECDH', public: await Crypto.importDhPub(otherPub) }, Me.dhKey, 256);
+      return Crypto.hkdfAes(bits, 'void/pair/v1', [Me.id, otherId].sort().join('|'));
+    })();
+    PairKeys.set(k, pr);
+    pr.catch(() => PairKeys.delete(k));
+  }
+  return pr;
+}
+
 /* ---------------------------------------------------------------------
    5 · Identity: the temporary profile for this tab
    --------------------------------------------------------------------- */
@@ -2160,7 +2192,7 @@ const Net = {
     const h = (typeof env.h === 'number' ? env.h : HOPS) - 1;
     if (h < 0) return;
     const out = Object.assign({}, env, { h });
-    for (const l of this.links.values()) if (l !== src && l.open) l.send({ e: out });
+    for (const l of this.links.values()) if (l !== src && l.open && !(l.relay && src === 'bc')) l.send({ e: out });
   },
   ingest(env, src) { this.queue = this.queue.then(() => this._ingest(env, src)).catch(err => console.warn('[void] ingest', err)); },
   async _ingest(env, src) {
@@ -2221,6 +2253,7 @@ const Net = {
     out.push(...Chat.recentPublicEnvs(80, 1500));
     out.push(...Players.envs());
     out.push(...Kick.envs());
+    out.push(...KitWatch.envs());
     for (const a of Activity.items.slice(-60)) if (a.env) out.push(a.env);
     return out;
   },
@@ -2250,7 +2283,7 @@ const Net = {
     }
   },
   localTabs() { let n = 0; for (const r of Presence.map.values()) if (r.local) n++; return Math.max(1, n); },
-  openLinks() { return [...this.links.values()].filter(l => l.open); },
+  openLinks() { return [...this.links.values()].filter(l => l.open && !l.relay); },
 };
 
 /* Direct Link (beta): serverless WebRTC. Two people swap an invite code and a reply code. */
@@ -2327,6 +2360,141 @@ const Links = {
     if (!this.host || this.host.closed) throw new Error('This invite has expired. Create a new one.');
     await this.host.pc.setRemoteDescription({ type: 'answer', sdp: sig.sdp });
     return cleanLine(sig.n, LIMITS.name);
+  },
+};
+/* Relay (optional): one WebSocket to a tiny relay server that forwards every message to every
+   other connected Void window. It only passes envelopes along. Everything is still signed and
+   checked here, so the relay can't forge or alter anything. Catch-up: a window that connects asks
+   once ("sync?"), one existing window answers with recent public state and its record inventory. */
+const RELAY_MAX = 60000;   // the relay drops anything over 64,000 characters
+const Relay = {
+  ws: null, state: 'off', tries: 0, timer: null, url: '', since: 0, lastError: '', pending: new Map(), peersSeen: new Map(),
+  link: { id: 'relay', relay: true, open: false, peer: null, send: obj => Relay.send(obj) },
+  target() {
+    if (Settings.relayOff) return '';
+    const u = String(Settings.relayUrl || RELAY_DEFAULT || '').trim();
+    return /^wss?:\/\/[^\s]+$/i.test(u) ? u : '';
+  },
+  start() {
+    this.connect();
+    window.addEventListener('online', () => { if (this.state !== 'online') this.reconnect(0); });
+    window.addEventListener('pagehide', () => { try { if (this.ws) this.ws.close(1000, 'bye'); } catch (e) { /* ignore */ } });
+    setInterval(() => { const cut = now() - 90000; for (const [k, t] of this.peersSeen) if (t < cut) this.peersSeen.delete(k); }, 30000);
+  },
+  /* Called after the relay settings change. */
+  restart() { this.tries = 0; this.close(); this.connect(); },
+  close() {
+    clearTimeout(this.timer); this.timer = null;
+    const ws = this.ws; this.ws = null;
+    if (ws) { ws.onopen = ws.onclose = ws.onerror = ws.onmessage = null; try { ws.close(1000, 'closing'); } catch (e) { /* ignore */ } }
+    this.setOpen(false);
+    this.state = 'off';
+    invalidate('net');
+  },
+  connect() {
+    const url = this.target();
+    this.url = url;
+    if (!url || typeof WebSocket !== 'function') { this.state = 'off'; invalidate('net'); return; }
+    let ws;
+    try { ws = new WebSocket(url); } catch (e) { this.lastError = 'That relay address is not valid.'; this.state = 'error'; invalidate('net'); return; }
+    this.ws = ws; this.state = 'connecting'; invalidate('net');
+    ws.onopen = () => {
+      if (this.ws !== ws) return;
+      this.tries = 0; this.state = 'online'; this.since = now(); this.lastError = '';
+      this.setOpen(true);
+      this.ctl({ c: 'sync?' });
+      Presence.announceSoon();
+      invalidate('net');
+    };
+    ws.onmessage = e => { if (this.ws === ws) this.onMessage(e.data); };
+    ws.onerror = () => { if (this.ws === ws) this.lastError = "Couldn't reach the relay."; };
+    ws.onclose = () => {
+      if (this.ws !== ws) return;
+      this.ws = null;
+      this.setOpen(false);
+      this.state = 'retry';
+      this.reconnect();
+      invalidate('net', 'presence');
+    };
+  },
+  reconnect(delay) {
+    clearTimeout(this.timer);
+    if (!this.target()) { this.state = 'off'; return; }
+    const ms = delay != null ? delay : Math.min(30000, 1000 * 2 ** Math.min(this.tries, 5)) + Math.random() * 1000;
+    this.tries++;
+    this.timer = setTimeout(() => { this.timer = null; if (!this.ws) this.connect(); }, ms);
+  },
+  setOpen(on) {
+    this.link.open = on;
+    if (on) Net.links.set('relay', this.link); else Net.links.delete('relay');
+  },
+  raw(str) {
+    if (!this.ws || this.ws.readyState !== 1 || str.length > RELAY_MAX) return false;
+    try { this.ws.send(str); return true; } catch (e) { return false; }
+  },
+  send(obj) { this.raw(JSON.stringify(obj)); },
+  ctl(obj) { this.send(Object.assign({ from: Net.inst }, obj)); },
+  /* Sends a list of envelopes to one window, split so every message stays under the relay's limit. */
+  sendEnvs(to, envs, c = 'bundle') {
+    let batch = [], size = 0;
+    const flush = () => { if (batch.length) this.ctl({ c, to, envs: batch }); batch = []; size = 0; };
+    for (const env of envs) {
+      const e = Object.assign({}, env, { h: 0 }), n = JSON.stringify(e).length + 1;
+      if (n > RELAY_MAX - 200) continue;
+      if (size + n > RELAY_MAX - 200) flush();
+      batch.push(e); size += n;
+    }
+    flush();
+  },
+  sendInv(to) {
+    const logs = { wiki: Wiki.log, mod: Mod.log, subs: Subs.log, rep: Reports.log };
+    for (const [k, log] of Object.entries(logs)) {
+      const ids = log.ids();
+      for (let i = 0; i < ids.length; i += 2000) this.ctl({ c: 'inv', to, k, ids: ids.slice(i, i + 2000) });
+    }
+  },
+  onMessage(data) {
+    if (typeof data !== 'string' || data.length > 70000) return;
+    let m; try { m = JSON.parse(data); } catch (e) { return; }
+    if (!m || typeof m !== 'object') return;
+    if (m.e) { Net.ingest(m.e, this.link); return; }
+    if (typeof m.c !== 'string' || typeof m.from !== 'string' || m.from === Net.inst || m.from.length > 16) return;
+    this.peersSeen.set(m.from, now());
+    if (m.to && m.to !== Net.inst) {
+      /* Someone else is already answering a newcomer: stand down. */
+      if (m.c === 'sync!') { const t = this.pending.get(m.to); if (t) { clearTimeout(t); this.pending.delete(m.to); } }
+      return;
+    }
+    if (m.c === 'sync?') {
+      if (!Me.profile || this.pending.has(m.from) || this.pending.size > 20) return;
+      this.pending.set(m.from, setTimeout(() => {
+        this.pending.delete(m.from);
+        this.ctl({ c: 'sync!', to: m.from });
+        this.sendEnvs(m.from, Net.bundle());
+        this.sendInv(m.from);
+      }, 150 + Math.random() * 1200));
+    } else if (m.c === 'bundle' || m.c === 'envs') {
+      for (const env of arr(m.envs).slice(0, 2000)) if (env && typeof env === 'object') Net.ingest(Object.assign({}, env, { h: 0 }), this.link);
+    } else if (m.c === 'inv') {
+      const logs = { wiki: Wiki.log, mod: Mod.log, subs: Subs.log, rep: Reports.log };
+      const log = logs[m.k];
+      if (!log) return;
+      const want = arr(m.ids).slice(0, 2000).filter(id => typeof id === 'string' && id.length < 64 && !log.has(id) && !Wiki.pruned.has(id));
+      if (want.length) this.ctl({ c: 'want', to: m.from, ids: want });
+    } else if (m.c === 'want') {
+      const envs = [];
+      for (const id of arr(m.ids).slice(0, 2000)) {
+        if (typeof id !== 'string') continue;
+        const env = Wiki.log.get(id) || Mod.log.get(id) || Subs.log.get(id) || Reports.log.get(id);
+        if (env) envs.push(env);
+      }
+      this.sendEnvs(m.from, envs, 'envs');
+    }
+  },
+  peers() { return this.peersSeen.size; },
+  label() {
+    if (!this.target()) return Settings.relayOff ? 'Off' : 'Not set up';
+    return { online: 'Connected', connecting: 'Connecting…', retry: 'Reconnecting…', error: 'Error', off: 'Off' }[this.state] || 'Off';
   },
 };
 function waitIce(pc, ms = 5000) {
@@ -2948,7 +3116,7 @@ const Presence = {
     const p = Me.profile;
     const payload = {
       t: 'presence', name: p.name, av: p.av, bio: p.bio, pronouns: p.pronouns, custom: p.custom, status: Me.status(), since: p.created,
-      dev: Device.id, rooms: [...Rooms.joined].slice(0, 20), inst: Net.inst,
+      dh: Me.keys.dhPub, dev: Device.id, dm: Settings.dmPolicy, rooms: [...Rooms.joined].slice(0, 20), inst: Net.inst,
       game: Settings.showGame && Me.game ? { id: Me.game.id, details: Me.game.details || '', state: Me.game.state || '', since: Me.game.since } : null,
     };
     try { await Net.send(payload); this.byeEnv = await Net.sign({ t: 'bye' }, { mod: false }); }
@@ -2967,6 +3135,7 @@ const Presence = {
     const e = Object.assign({}, env); delete e.h;
     this.map.set(ev.by, { p, seen: now(), env: e, local: src === 'bc' || src === 'self', mod: !!ev._mod });
     Known.set(p.id, { id: p.id, name: p.name, tag: p.tag, av: p.av, bio: p.bio, pronouns: p.pronouns });
+    Threads.touchInfo(p.id, p);
     invalidate('presence');
   },
   onBye(ev) { const r = this.map.get(ev.by); if (r && ev.by !== Me.id && r.p.ts <= ev.ts) { this.map.delete(ev.by); invalidate('presence'); } },
@@ -3007,12 +3176,15 @@ const Chat = {
     return c;
   },
   isPublic: cid => /^[LGR]:/.test(cid),
+  isPrivate: cid => /^[DP]:/.test(cid),
   valid(cid) {
     if (typeof cid !== 'string' || cid.length > 90) return false;
     const [k, a, b] = cid.split(':');
     if (k === 'L') return LOUNGE.some(l => l.id === a && !l.readonly);
     if (k === 'G') return !!Games.channel(a, b);
     if (k === 'R') return /^[a-z0-9]{6,20}$/.test(a || '');
+    if (k === 'D') return /^u[\w-]{15}$/.test(a || '') && /^u[\w-]{15}$/.test(b || '');
+    if (k === 'P') return /^[a-z0-9]{8,20}$/.test(a || '');
     return false;
   },
   addPublic(env, ev, live) {
@@ -3025,6 +3197,16 @@ const Chat = {
     this.apply(c, ev, live);
     Session.saveSoon();
   },
+  addPrivate(cid, inner, mod, live) {
+    const c = this.conv(cid);
+    if (typeof inner.id !== 'string' || c.ids.has(inner.id)) return;
+    c.ids.add(inner.id);
+    c.recs.push({ v: inner, m: mod ? 1 : 0 });
+    if (c.recs.length > LIMITS.convKeep * 3) c.recs = c.recs.slice(-LIMITS.convKeep * 2);
+    this.apply(c, Object.assign({}, inner, { _mod: !!mod }), live);
+    Session.saveSoon();
+  },
+  addSystem(cid, text, ts = now()) { this.addPrivate(cid, { t: 'msg', id: 'sys' + uid(), by: 'system', ts, text, name: 'Void', av: { e: '🌀', c: '#7c3aed' }, sys: 1 }, false, false); },
   apply(c, ev, live) {
     if (ev.t === 'msg') {
       if (c.msgs.has(ev.id)) return;
@@ -3081,12 +3263,13 @@ const Chat = {
     if (m.by === Me.id) { c.lastRead = Math.max(c.lastRead, m.ts); return; }
     if (m.sys || Session.isBlocked(m.by) || m.ts < Boot.at - 5000) return;
     if (c.id[0] === 'R' && !Rooms.joined.has(c.id.slice(2))) return;
+    const priv = this.isPrivate(c.id);
     const viewing = this.isViewing(c.id);
     const parent = m.reply ? c.msgs.get(m.reply) : null;
     const mention = mentionsMe(m.text) || !!(parent && parent.by === Me.id);
     if (viewing) c.lastRead = Math.max(c.lastRead, m.ts);
-    else { c.unread++; if (mention) c.mentions++; invalidate('unread'); }
-    if (mention && !viewing && !Session.isMuted(c.id) && now() - m.ts < 60000) Notify.message(c, m);
+    else { c.unread++; if (mention || priv) c.mentions++; invalidate('unread'); }
+    if ((priv || mention) && !viewing && !Session.isMuted(c.id) && now() - m.ts < 60000) Notify.message(c, m, priv);
   },
   isViewing(cid) {
     if (document.hidden || !document.hasFocus()) return false;
@@ -3112,6 +3295,7 @@ const Chat = {
     }
     return { u, m };
   },
+  unreadPrivate() { return this.sum(id => this.isPrivate(id)); },
   unreadLounge() { const s = this.sum(id => id.startsWith('L:') || (id[0] === 'R' && !roomGame(id))); s.u += this.annUnread; return s; },
   unreadGame(gid) { return this.sum(id => id.startsWith('G:' + gid + ':') || (id[0] === 'R' && roomGame(id) === gid)); },
   attention() { return this.sum(() => true).m; },
@@ -3154,6 +3338,20 @@ const Chat = {
       }
       return { ok: true };
     }
+    if (this.isPrivate(cid)) {
+      const t = Threads.get(cid);
+      if (!t || t.left) return { ok: false, reason: 'You left this conversation.', icon: 'logout' };
+      if (t.kind === 'dm') {
+        const other = Threads.other(t), name = Threads.memberName(t, other);
+        if (Session.isBlocked(other)) return { ok: false, reason: `You blocked ${name}. Unblock them to send messages.`, icon: 'ban', action: 'unblock', uid: other };
+        const p = Presence.get(other);
+        if (!p) return { ok: false, reason: `${name} is offline. Messages can only be delivered while they're online.`, icon: 'clock', soft: true };
+        if (p.dm === 'none' && !this.convs.get(cid)?.order.length) return { ok: false, reason: `${name} isn't accepting new direct messages.`, icon: 'lock' };
+        return { ok: true };
+      }
+      if (!t.members.some(id => id !== Me.id && Presence.get(id))) return { ok: false, reason: 'Nobody else in this thread is online right now.', icon: 'clock', soft: true };
+        return { ok: true };
+    }
     return { ok: false, reason: 'This conversation no longer exists.', icon: 'info' };
   },
   async send(cid, text, opts = {}) {
@@ -3174,6 +3372,7 @@ const Chat = {
     return inner;
   },
   async sendEvent(cid, inner) {
+    if (this.isPrivate(cid)) return Threads.send(cid, inner);
     const room = cid[0] === 'R' ? Rooms.known.get(cid.slice(2)) : null;
     if (room && room.locked) return Rooms.sendLocked(room, inner);
     return Net.send(Object.assign(inner, { conv: cid }));
@@ -3312,6 +3511,149 @@ const Rooms = {
 /* ---------------------------------------------------------------------
    11 · Activity feed & notifications
    --------------------------------------------------------------------- */
+const Threads = {
+  map: new Map(),
+  dmId(other) { return 'D:' + [Me.id, other].sort().join(':'); },
+  get(cid) { return this.map.get(cid) || null; },
+  list() {
+    const lastTs = t => { const m = Chat.last(t.cid); return m ? m.ts : t.ts; };
+    return [...this.map.values()].filter(t => !t.left).sort((a, b) => lastTs(b) - lastTs(a));
+  },
+  other(t) { return t.kind === 'dm' ? t.members.find(m => m !== Me.id) || Me.id : null; },
+  memberName(t, id) { if (id === Me.id) return Me.profile.name; const p = Presence.get(id); return (p && p.name) || (t.info[id] && t.info[id].name) || (Known.get(id) || {}).name || 'Someone'; },
+  memberAv(t, id) { if (id === Me.id) return Me.profile.av; const p = Presence.get(id); return (p && p.av) || (t.info[id] && sanitizeAv(t.info[id].av)) || { e: '👤', c: '#475569' }; },
+  title(t) {
+    if (t.kind === 'dm') return this.memberName(t, this.other(t));
+    return t.name || t.members.filter(m => m !== Me.id).map(m => this.memberName(t, m)).join(', ') || 'Just you';
+  },
+  ensureDM(otherId, info) {
+    const cid = this.dmId(otherId);
+    let t = this.map.get(cid);
+    if (!t) { t = { cid, kind: 'dm', name: '', members: [Me.id, otherId].sort(), info: {}, by: Me.id, ts: now(), left: false }; this.map.set(cid, t); }
+    if (info) t.info[otherId] = { name: cleanLine(info.name, LIMITS.name) || 'Someone', av: sanitizeAv(info.av) };
+    t.left = false;
+    Session.saveSoon(); invalidate('threads');
+    return t;
+  },
+  async createGroup(name, ids) {
+    const members = [...new Set([Me.id, ...ids])].slice(0, LIMITS.groupMax);
+    const cid = 'P:' + rid(12);
+    const t = { cid, kind: 'group', name: cleanLine(name, 40), members, info: {}, by: Me.id, ts: now(), left: false };
+    for (const id of members) { const u = userInfo(id); t.info[id] = { name: u.name, av: u.av }; }
+    this.map.set(cid, t);
+    await this.send(cid, { t: 'thread', name: t.name, members, info: t.info });
+    Chat.addSystem(cid, 'You started this private chat. Messages are end-to-end encrypted and only reach members who are online.');
+    Session.check('thread'); Session.saveSoon(); invalidate('threads');
+    return cid;
+  },
+  /* Fan-out encryption: one AES-GCM box per member, each with that member's pairwise key. */
+  async send(cid, inner) {
+    const t = this.map.get(cid);
+    if (!t) throw new Error('This conversation no longer exists.');
+    const full = Object.assign({}, inner, { id: inner.id || uid(), by: Me.id, ts: now(), conv: cid });
+    const str = JSON.stringify(full);
+    const parts = {};
+    for (const id of t.members) {
+      if (id !== Me.id && Session.isBlocked(id)) continue;
+      const pub = Presence.dhOf(id);
+      if (!pub) continue;
+      try { parts[id] = await Crypto.seal(await pairKey(id, pub), str, cid); } catch (e) { /* skip */ }
+    }
+    if (!Object.keys(parts).some(id => id !== Me.id)) {
+      if (inner.t === 'msg') throw new Error(t.kind === 'dm' ? `${this.title(t)} is offline. Messages can only be delivered while they're online.` : 'Nobody else in this thread is online right now.');
+      return null;
+    }
+    return Net.send({ t: 'enc', mode: 'pair', conv: cid, to: Object.keys(parts), parts, dh: Me.keys.dhPub });
+  },
+  async onEnc(ev) {
+    if (!ev.parts || typeof ev.parts !== 'object' || !ev.parts[Me.id] || typeof ev.dh !== 'string') return;
+    if (Mod.banOf(ev.by) || (ev.by !== Me.id && Session.isBlocked(ev.by))) return;
+    const cid = ev.conv;
+    if (cid.startsWith('D:')) { const [, a, b] = cid.split(':'); if (!(a === Me.id || b === Me.id) || !(a === ev.by || b === ev.by)) return; }
+    else if (!/^P:[a-z0-9]{8,20}$/.test(cid)) return;
+    let str = null;
+    try { str = await Crypto.open(await pairKey(ev.by, ev.dh), ev.parts[Me.id], cid); } catch (e) { str = null; }
+    if (!str) return;
+    let inner; try { inner = JSON.parse(str); } catch (e) { return; }
+    if (!inner || inner.by !== ev.by || inner.conv !== cid || typeof inner.t !== 'string' || typeof inner.id !== 'string') return;
+    this.onInner(cid, inner, ev);
+  },
+  onInner(cid, inner, ev) {
+    const sender = ev.by;
+    let t = this.map.get(cid);
+    const fresh = !t;
+    if (inner.t === 'thread') {
+      if (!cid.startsWith('P:')) return;
+      const members = [...new Set(arr(inner.members).filter(x => typeof x === 'string' && /^u[\w-]{15}$/.test(x)))].slice(0, LIMITS.groupMax);
+      if (!members.includes(Me.id) || !members.includes(sender) || (t && t.left)) return;
+      if (fresh && sender !== Me.id && Settings.dmPolicy === 'none') return;
+      const info = {};
+      for (const id of members) { const x = inner.info && inner.info[id]; info[id] = { name: cleanLine(x && x.name, LIMITS.name) || 'Someone', av: sanitizeAv(x && x.av) }; }
+      if (!t) { t = { cid, kind: 'group', name: '', members, info, by: sender, ts: ev.ts, left: false }; this.map.set(cid, t); }
+      const before = new Set(t.members), oldName = t.name;
+      t.members = members; t.name = cleanLine(inner.name, 40); Object.assign(t.info, info);
+      if (sender !== Me.id) {
+        const who = info[sender].name;
+        if (fresh) { Chat.addSystem(cid, `${who} added you to this private chat. Messages are end-to-end encrypted.`, ev.ts); Notify.thread(t, who); }
+        else {
+          const added = members.filter(m => !before.has(m)).map(m => info[m].name);
+          if (added.length) Chat.addSystem(cid, `${who} added ${added.join(', ')}.`, ev.ts);
+          if (oldName !== t.name) Chat.addSystem(cid, t.name ? `${who} renamed the thread to “${t.name}”.` : `${who} removed the thread name.`, ev.ts);
+        }
+      }
+      Session.saveSoon(); invalidate('threads');
+      return;
+    }
+    if (inner.t === 'thread.leave') {
+      if (!t || sender === Me.id) return;
+      t.members = t.members.filter(m => m !== sender);
+      Chat.addSystem(cid, `${this.memberName(t, sender)} left the thread.`, ev.ts);
+      Session.saveSoon(); invalidate('threads');
+      return;
+    }
+    if (inner.t === 'typing') { if (t && !t.left) Chat.onTyping(cid, sender, inner.name); return; }
+    if (!['msg', 'msg.edit', 'msg.del', 'react'].includes(inner.t)) return;
+    if (fresh) {
+      if (sender !== Me.id && Settings.dmPolicy === 'none') return;
+      if (cid.startsWith('D:')) {
+        const other = cid.split(':').slice(1).find(x => x !== Me.id) || Me.id;
+        t = this.ensureDM(other, sender === Me.id ? null : { name: inner.name, av: inner.av });
+      } else {
+        t = { cid, kind: 'group', name: '', members: [...new Set(arr(ev.to).filter(x => typeof x === 'string' && /^u[\w-]{15}$/.test(x)))].slice(0, LIMITS.groupMax), info: {}, by: sender, ts: ev.ts, left: false };
+        this.map.set(cid, t); invalidate('threads');
+      }
+    }
+    if (t.left || (t.kind === 'group' && !t.members.includes(sender))) return;
+    if (inner.t === 'msg' && sender !== Me.id) t.info[sender] = { name: cleanLine(inner.name, LIMITS.name) || 'Someone', av: sanitizeAv(inner.av) };
+    if (inner.t === 'msg' && sender !== Me.id && !Flood.ok(sender, ev.ts)) return;
+    Chat.addPrivate(cid, inner, !!ev._mod, true);
+  },
+  async leave(cid) {
+    const t = this.map.get(cid);
+    if (!t) return;
+    if (t.kind === 'group') { try { await this.send(cid, { t: 'thread.leave' }); } catch (e) { /* nobody online */ } }
+    t.left = true;
+    Session.saveSoon(); invalidate('threads');
+  },
+  async rename(cid, name) { const t = this.map.get(cid); if (!t) return; t.name = cleanLine(name, 40); Chat.addSystem(cid, t.name ? `You renamed the thread to “${t.name}”.` : 'You removed the thread name.'); await this.send(cid, { t: 'thread', name: t.name, members: t.members, info: t.info }); invalidate('threads'); },
+  async addMembers(cid, ids) {
+    const t = this.map.get(cid);
+    if (!t) return;
+    const added = ids.filter(id => !t.members.includes(id)).slice(0, LIMITS.groupMax - t.members.length);
+    if (!added.length) return;
+    t.members = [...t.members, ...added];
+    for (const id of added) { const u = userInfo(id); t.info[id] = { name: u.name, av: u.av }; }
+    Chat.addSystem(cid, `You added ${added.map(id => t.info[id].name).join(', ')}.`);
+    await this.send(cid, { t: 'thread', name: t.name, members: t.members, info: t.info });
+    invalidate('threads');
+  },
+  touchInfo(id, p) { for (const t of this.map.values()) if (t.members.includes(id)) t.info[id] = { name: p.name, av: p.av }; },
+};
+
+/* ---------------------------------------------------------------------
+   11 · Activity feed & notifications
+   --------------------------------------------------------------------- */
+
 const Activity = {
   items: [],
   on(ev, env) {
@@ -3362,6 +3704,11 @@ const Notify = {
     this.sound();
     updateTitle();
   },
+  thread(t, who) {
+    if (Me.status() === 'dnd') return;
+    toast({ title: 'New private chat', body: `${who} added you to “${Threads.title(t)}”.`, icon: 'lock', actions: [{ label: 'Open', run: () => Router.go('dm/' + t.cid) }] });
+    this.sound();
+  },
   desktop(title, body, route, tag) {
     if (!Settings.desktop || !('Notification' in window) || Notification.permission !== 'granted') return;
     try { const n = new Notification(title, { body, tag, silent: true }); n.onclick = () => { window.focus(); Router.go(route); n.close(); }; } catch (e) { /* unsupported */ }
@@ -3396,6 +3743,7 @@ const Admin = {
     Store.ls.set(K.auth, { fails: 0, until: 0 });
     this.active = true; this.since = now(); this.touch();
     Reports.decryptAll();
+    KitWatch.open(); KitWatch.start();
     Presence.announce(); Bridges.userChanged();
     invalidate('admin', 'presence', 'me', 'mod', 'route');
     return { ok: true };
@@ -3411,7 +3759,7 @@ const Admin = {
   lock() {
     this.active = false; this.signKey = null; this.sealKey = null;
     clearTimeout(this.timer);
-    Reports.opened.clear();
+    Reports.opened.clear(); KitWatch.lock();
     Presence.announce(); Bridges.userChanged();
     invalidate('admin', 'presence', 'me', 'mod', 'route');
     if (Router.route.view === 'admin') Router.refresh();
@@ -3461,8 +3809,9 @@ const KIT_VERSION = '0.1.0';
    original, unmodified kit (challenge → proof), and every later message must carry a valid
    signature (made with the session key from the proof) and an increasing sequence number. */
 class Bridge {
-  constructor({ game, getWin, origins = ['*'], sandbox = false, listed = true, log = null, onConnect = null }) {
-    Object.assign(this, { game, getWin, origins, sandbox, listed, log, onConnect });
+  constructor({ game, getWin, origins = ['*'], sandbox = false, listed = true, log = null, onConnect = null, onSuspect = null }) {
+    Object.assign(this, { game, getWin, origins, sandbox, listed, log, onConnect, onSuspect });
+    this.sus = {};
     this.connected = false; this.nonce = null; this.key = null; this.seq = 0; this.peerOrigin = null;
     this.subs = new Set(['general']); this.achieved = new Set(); this.rl = {}; this.q = Promise.resolve();
     Bridges.set.add(this);
@@ -3470,7 +3819,17 @@ class Bridge {
   matches(e) {
     const w = this.getWin();
     if (!w || e.source !== w) return false;
-    return this.origins.includes('*') || this.origins.includes(e.origin);
+    if (this.origins.includes('*') || this.origins.includes(e.origin)) return true;
+    /* Kit traffic from a website that isn't on this game's page. */
+    if (e.data && typeof e.data === 'object' && e.data.void === VOID.protocol) this.suspect('bad_origin', e.origin);
+    return false;
+  }
+  /* Reports signs of a tampered or spoofed Connection Kit (see KitWatch). Sandbox runs never report. */
+  suspect(code, origin) {
+    if (this.sandbox || !this.onSuspect) return;
+    this.sus[code] = (this.sus[code] || 0) + 1;
+    if (code === 'ignored' && this.sus[code] < 3) return;   // one stray hello can be a harmless race
+    try { this.onSuspect(code, origin || this.peerOrigin || ''); } catch (e) { console.warn('[void] kit watch', e); }
   }
   receive(e) { const m = e.data, origin = e.origin; this.q = this.q.then(() => this.handle(m, origin)).catch(err => console.warn('[void] bridge', err)); }
   post(type, data, re) {
@@ -3507,7 +3866,7 @@ class Bridge {
     const d = m.data && typeof m.data === 'object' ? m.data : {};
     const ok = data => { if (id) this.post('ack', data || {}, id); };
     const fail = (code, message) => { if (id) this.post('error', { code, message }, id); if (this.log) this.log('err', { type: code, data: message }); };
-    const reject = (code, message) => { if (this.log) this.log('err', { type: code, data: message }); };
+    const reject = (code, message) => { if (this.log) this.log('err', { type: code, data: message }); this.suspect(code, origin); };
     if (m.type === 'hello') {
       if (this.connected) return reject('ignored', 'Already connected: a running session cannot be reset by other code on the page.');
       if (!this.nonce) this.nonce = rid(32);
@@ -3516,7 +3875,9 @@ class Bridge {
       return;
     }
     if (m.type === 'proof') {
-      if (this.connected || !this.nonce || !this.limit('proof', 30, 60000)) return;
+      if (this.connected) return reject('ignored', 'A second proof was sent after the kit connected.');
+      if (!this.nonce) return;
+      if (!this.limit('proof', 30, 60000)) { this.suspect('proof_flood', origin); return; }
       const expect = await sha256Hex(this.nonce + '|' + kitFunctionText());
       const good = typeof d.proof === 'string' && ctEqual(TE.encode(d.proof), TE.encode(expect)) && typeof d.key === 'string' && /^[0-9a-f]{64}$/.test(d.key);
       if (!good) {
@@ -3641,6 +4002,7 @@ const Session = {
     }
     d.convs = convs;
     d.rooms = { known: [...Rooms.known.values()].filter(r => !r.closed && (Rooms.joined.has(r.rid) || now() - r.ts < 30 * 60000)).map(r => r.env), joined: [...Rooms.joined], keys: Object.assign({}, Rooms.keyRaw) };
+    d.threads = Object.fromEntries(Threads.map);
     d.activity = Activity.items.slice(-120).map(a => a.env);
     if (!Store.ss.set(K.session, d)) {
       for (const k of Object.keys(convs)) convs[k].r = convs[k].r.slice(-50);
@@ -3652,8 +4014,9 @@ const Session = {
     for (const env of arr(d.rooms && d.rooms.known)) { const ev = parseEnv(env); if (ev && ev.t === 'room') Rooms.onMeta(ev, env); }
     for (const id of arr(d.rooms && d.rooms.joined)) if (typeof id === 'string') Rooms.joined.add(id);
     for (const [id, k] of Object.entries((d.rooms && d.rooms.keys) || {})) { try { await Rooms.setKey(id, unb64u(k)); } catch (e) { /* skip */ } }
+    for (const [cid, t] of Object.entries(d.threads || {})) if (t && t.cid === cid && Array.isArray(t.members)) Threads.map.set(cid, Object.assign({ info: {} }, t));
     for (const [cid, s] of Object.entries(d.convs || {})) {
-      if (!s || typeof s !== 'object' || !/^[LGR]:/.test(cid)) continue;
+      if (!s || typeof s !== 'object' || !/^[LGRDP]:/.test(cid)) continue;
       const c = Chat.conv(cid);
       c.lastRead = Number(s.lr) || 0; c.unread = s.u | 0; c.mentions = s.mn | 0;
       for (const r of arr(s.r)) {
@@ -3662,6 +4025,10 @@ const Session = {
           if (!ev || c.ids.has(r.e.i)) continue;
           c.ids.add(r.e.i); c.recs.push(r);
           if (ev.t === 'enc') await Chat.openRoomRec(ev, false); else Chat.apply(c, ev, false);
+        } else if (r && r.v && typeof r.v.id === 'string') {
+          if (c.ids.has(r.v.id)) continue;
+          c.ids.add(r.v.id); c.recs.push(r);
+          Chat.apply(c, Object.assign({}, r.v, { _mod: !!r.m }), false);
         }
       }
     }
@@ -3706,7 +4073,7 @@ Net.on('enc', async (ev, env) => {
     c.recs.push({ e });
     Session.saveSoon();
     await Chat.openRoomRec(ev, true);
-  }
+  } else if (ev.mode === 'pair') await Threads.onEnc(ev);
 });
 Net.on('room', (ev, env) => Rooms.onMeta(ev, env));
 Net.on('room.close', ev => Rooms.onClose(ev));
@@ -4146,14 +4513,16 @@ function convTitle(cid) {
   const [k, a, b] = cid.split(':');
   if (k === 'L') { const l = LOUNGE.find(x => x.id === a); return '#' + (l ? l.name : a); }
   if (k === 'G') { const c = Games.channel(a, b); return '#' + (c ? c.name : b) + ' · ' + Games.name(a); }
-  const r = Rooms.known.get(a);
-  return r ? r.name : 'a thread';
+  if (k === 'R') { const r = Rooms.known.get(a); return r ? r.name : 'a thread'; }
+  const t = Threads.get(cid);
+  return t ? Threads.title(t) : 'a private chat';
 }
 function routeOf(cid) {
   const [k, a, b] = cid.split(':');
   if (k === 'L') return 'lounge/' + a;
   if (k === 'G') return `game/${a}/c/${b}`;
-  return 'room/' + a;
+  if (k === 'R') return 'room/' + a;
+  return 'dm/' + encodeURIComponent(cid);
 }
 const isNarrow = () => innerWidth <= 1200;
 const badgeNum = n => (n > 99 ? '99+' : String(n));
@@ -4163,7 +4532,7 @@ function railBtn({ to, label, ico, on, badge = 0, dot = 0 }) {
 }
 function renderRail() {
   const ctx = Router.route.ctx || '';
-  const lounge = Chat.unreadLounge();
+  const priv = Chat.unreadPrivate(), lounge = Chat.unreadLounge();
   const favs = Session.d.favorites.map(id => Games.get(id)).filter(Boolean);
   const cur = ctx.startsWith('game:') ? Games.get(ctx.slice(5)) : null;
   const shown = [...favs];
@@ -4172,6 +4541,7 @@ function renderRail() {
   setHTML($('#rail'), html`
     <button class="rail-logo" data-act="go" data-to="home" data-tip="Void ${VOID.version}" data-tip-pos="right" aria-label="Void home" data-fk="rail-logo">${LOGO(34)}</button>
     ${railBtn({ to: 'home', label: 'Home', ico: 'home', on: ctx === 'home' })}
+    ${railBtn({ to: 'messages', label: 'Private chats', ico: 'chat', on: ctx === 'messages', badge: priv.m, dot: priv.u })}
     ${railBtn({ to: 'lounge/lounge', label: 'Lounge: cross-game chat', ico: 'globe', on: ctx === 'lounge', badge: lounge.m, dot: lounge.u })}
     <div class="rail-sep" role="separator"></div>
     ${shown.map(g => { const u = Chat.unreadGame(g.id); const on = ctx === 'game:' + g.id; return html`<button class="rail-btn game ${on ? 'active' : ''} ${u.u ? 'unread' : ''}" style="--g:${Games.gradient(g)}" data-act="go" data-to="game/${g.id}" data-tip="${g.name}" data-tip-pos="right" aria-label="${g.name}" data-fk="rail-g-${g.id}">${g.icon}${u.m ? html`<span class="rail-badge">${badgeNum(u.m)}</span>` : ''}</button>`; })}
@@ -4194,10 +4564,11 @@ function roomNav(r, on) {
 }
 function sideHome(r) {
   const favs = Session.d.favorites.map(id => Games.get(id)).filter(Boolean);
-  const lounge = Chat.unreadLounge();
+  const priv = Chat.unreadPrivate(), lounge = Chat.unreadLounge();
   return [html`<div class="side-title">Home</div>`, html`
     ${navItem({ to: 'home', label: 'Dashboard', ico: 'home', on: r.view === 'home' })}
     ${navItem({ to: 'games', label: 'Browse games', ico: 'compass' })}
+    ${navItem({ to: 'messages', label: 'Private chats', ico: 'chat', badge: priv.m, unread: !!priv.u })}
     ${navItem({ to: 'lounge/lounge', label: 'Lounge', ico: 'globe', badge: lounge.m, unread: !!lounge.u })}
     <div class="side-label">Favorite games</div>
     ${favs.length ? favs.map(g => navItem({ to: 'game/' + g.id, label: g.name, ico: gthumb(g, 'sm'), sub: Presence.countInGame(g.id) ? Presence.countInGame(g.id) + ' playing' : '', badge: Chat.unreadGame(g.id).m, unread: !!Chat.unreadGame(g.id).u })) : html`<p class="muted small" style="padding:4px 8px">Star a game to pin it here and in the left bar.</p>`}
@@ -4238,7 +4609,20 @@ function sideGame(g, r) {
     <div class="side-label"><span>Public threads</span><span class="spacer"></span><button class="ibtn sm" data-act="newRoom" data-gid="${g.id}" aria-label="Start a public thread" data-tip="Start a public thread">${icon('plus', 15)}</button></div>
     ${rooms.length ? rooms.map(x => roomNav(x, r.cid === 'R:' + x.rid)) : html`<p class="muted small" style="padding:4px 8px">No threads yet. Start one to find a group.</p>`}`];
 }
-const SideState = {};
+const SideState = { dmQuery: '' };
+function sideMessages(r) {
+  const q = SideState.dmQuery.toLowerCase();
+  const list = Threads.list().filter(t => !q || Threads.title(t).toLowerCase().includes(q));
+  return [html`<div class="side-title">Private chats</div><button class="ibtn" data-act="newMessage" data-tip="New message" aria-label="New message">${icon('edit')}</button>`, html`
+    <div class="side-search"><input class="input" type="search" placeholder="Find a conversation" aria-label="Find a conversation" value="${SideState.dmQuery}" data-fk="dm-search" data-input="dmSearch"></div>
+    ${list.length ? list.map(t => {
+      const last = Chat.last(t.cid), c = Chat.convs.get(t.cid), other = Threads.other(t);
+      const st = other ? (Presence.get(other) ? Presence.get(other).status : 'offline') : null;
+      const ico = t.kind === 'dm' ? avatar(Threads.memberAv(t, other), 'sm', st) : html`<span class="av sm" style="--c:#4f46e5">${icon('users', 15)}</span>`;
+      const preview = last ? (last.sys ? stripMd(last.text) : (last.by === Me.id ? 'You: ' : '') + stripMd(Mod.filter(last.text))) : t.kind === 'dm' ? 'Say hello 👋' : plural(t.members.length, 'member');
+      return navItem({ to: 'dm/' + encodeURIComponent(t.cid), label: Threads.title(t), ico, on: r.cid === t.cid, sub: preview.slice(0, 60), unread: !!(c && c.unread), badge: c ? c.mentions : 0, fk: 'c-' + t.cid });
+    }) : html`<div class="empty sm"><p class="small">${q ? 'No conversations match.' : 'No private chats yet.'}</p>${q ? '' : html`<button class="btn sm primary" data-act="newMessage">${icon('edit', 15)} New message</button>`}</div>`}`];
+}
 const DEV_SECTIONS = { overview: ['Overview', 'code'], guide: ['Integration guide', 'book'], sdk: ['Connection Kit', 'package'], sandbox: ['Sandbox', 'terminal'], submit: ['Submit a game', 'upload'], mine: ['My submissions', 'inbox'] };
 function sideDev(r) {
   const mine = Subs.list().filter(s => Subs.mine.has(s.id));
@@ -4249,10 +4633,10 @@ function sideDev(r) {
     <a class="nav-item" href="#" data-act="dlSdk" data-fk="dl-sdk"><span class="nav-ico">${icon('download', 18)}</span><span class="nav-label">void-connection-kit.js</span></a>
     <a class="nav-item" href="#" data-act="dlManifest" data-fk="dl-manifest"><span class="nav-ico">${icon('download', 18)}</span><span class="nav-label">Manifest template</span></a>`];
 }
-const ADMIN_SECTIONS = { dashboard: ['Dashboard', 'shield'], subs: ['Submissions', 'inbox'], games: ['Games', 'gamepad'], reports: ['Reports', 'flag'], wiki: ['Wiki changes', 'book'], users: ['People & bans', 'users'], announce: ['Announcements', 'megaphone'], settings: ['Settings', 'settings'], log: ['Audit log', 'list'] };
+const ADMIN_SECTIONS = { dashboard: ['Dashboard', 'shield'], subs: ['Submissions', 'inbox'], games: ['Games', 'gamepad'], reports: ['Reports', 'flag'], kits: ['Kit alerts', 'alert'], wiki: ['Wiki changes', 'book'], users: ['People & bans', 'users'], announce: ['Announcements', 'megaphone'], settings: ['Settings', 'settings'], log: ['Audit log', 'list'] };
 function sideAdmin(r) {
   if (!Admin.active) return [html`<div class="side-title">${icon('shield', 18)} Moderation</div>`, html`<p class="muted small" style="padding:8px">Sign in with the moderator password to review submissions, reports and wiki changes.</p>`];
-  const counts = { subs: Subs.pending().length, reports: Reports.openCount(), wiki: Wiki.openTotal() };
+  const counts = { subs: Subs.pending().length, reports: Reports.openCount(), kits: KitWatch.activeCount(), wiki: Wiki.openTotal() };
   return [html`<div class="side-title">${icon('shield', 18)} Moderation <span class="badge mod">On</span></div>`, html`
     ${Object.entries(ADMIN_SECTIONS).map(([k, [label, ico]]) => navItem({ to: 'admin/' + k, label, ico, on: r.section === k, badge: counts[k] || 0, soft: k === 'wiki' }))}
     <div class="side-label">Session</div>
@@ -4262,7 +4646,7 @@ function sideFoot() {
   const p = Me.profile, st = Me.status();
   const links = Net.openLinks().length, people = Presence.map.size;
   return html`<div class="side-foot">
-    <button class="net" data-act="openNetwork" data-fk="net" aria-label="Network status"><i class="pulse"></i><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${plural(people, 'person', 'people')} online · ${links ? plural(links, 'linked device') : plural(Net.localTabs(), 'tab')}</span>${icon('network', 15)}</button>
+    <button class="net" data-act="openNetwork" data-fk="net" aria-label="Network status"><i class="pulse"></i><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${plural(people, 'person', 'people')} online · ${Relay.state === 'online' ? 'relay on' : links ? plural(links, 'linked device') : plural(Net.localTabs(), 'tab')}</span>${icon('network', 15)}</button>
     <button class="me-chip" data-act="meMenu" data-fk="me" aria-label="Your profile and status">${avatar(p.av, 'md', st)}<span class="me-text"><b>${p.name}</b><span>${p.custom || (Admin.active ? 'Moderator · #' + p.tag : '#' + p.tag)}</span></span>${icon('chevronDown', 16)}</button>
   </div>`;
 }
@@ -4270,6 +4654,7 @@ function renderSide() {
   const r = Router.route, ctx = r.ctx || 'home';
   let parts;
   if (ctx.startsWith('game:') && Games.get(ctx.slice(5))) parts = sideGame(Games.get(ctx.slice(5)), r);
+  else if (ctx === 'messages') parts = sideMessages(r);
   else if (ctx === 'lounge') parts = sideLounge(r);
   else if (ctx === 'dev') parts = sideDev(r);
   else if (ctx === 'admin') parts = sideAdmin(r);
@@ -4291,7 +4676,13 @@ function renderAside() {
   if (aside.hidden) { aside._html = ''; aside.innerHTML = ''; return; }
   const cid = r.cid, k = cid[0];
   const groups = [];
-  if (k === 'R') groups.push(['In this thread', Presence.inRoom(cid.slice(2)).sort(byPresence)]);
+  if (k === 'D' || k === 'P') {
+    const t = Threads.get(cid);
+    if (t) {
+      const ms = t.members.map(id => { const u = userInfo(id); return Object.assign({}, u, { status: u.online ? u.status : 'offline', online: u.online }); }).sort(byPresence);
+      groups.push(['Members', ms]);
+    }
+  } else if (k === 'R') groups.push(['In this thread', Presence.inRoom(cid.slice(2)).sort(byPresence)]);
   else if (k === 'G') {
     const gid = cid.split(':')[1], all = Presence.list().sort(byPresence);
     groups.push(['Playing ' + Games.name(gid), all.filter(p => p.game && p.game.id === gid)]);
@@ -4327,6 +4718,8 @@ const Router = {
         if (c === 'wiki') return { view: 'wiki', ctx: 'game:' + b, gid: b };
         if (c === 'c' && Games.channel(b, d)) return { view: 'chat', ctx: 'game:' + b, gid: b, cid: `G:${b}:${d}` };
         return { view: 'game', ctx: 'game:' + b, gid: b };
+      case 'messages': return { view: 'messages', ctx: 'messages' };
+      case 'dm': { const t = Threads.get(b); return t && !t.left ? { view: 'chat', ctx: 'messages', cid: b } : { view: 'missing', ctx: 'messages', what: 'conversation' }; }
       case 'play': return Games.has(b) ? { view: 'game', ctx: 'game:' + b, gid: b } : { view: 'missing', ctx: 'games', what: 'game' };
       case 'lounge': { const l = LOUNGE.find(x => x.id === (b || 'lounge')); return l ? { view: 'chat', ctx: 'lounge', cid: 'L:' + l.id } : { view: 'missing', ctx: 'lounge', what: 'channel' }; }
       case 'room': { const r = Rooms.known.get(b); return r && !r.closed ? { view: 'chat', ctx: r.gid ? 'game:' + r.gid : 'lounge', gid: r.gid, cid: 'R:' + b } : { view: 'missing', ctx: 'lounge', what: 'thread' }; }
@@ -4362,8 +4755,84 @@ const Router = {
 };
 
 /* Global input handling */
+Views.messages = {
+  mount(el) { this.el = el; this.render(); },
+  update(sc) { if (sc.has('presence') || sc.has('threads')) this.render(); },
+  render() {
+    const others = Presence.others().sort(byPresence);
+    setHTML(this.el, html`${viewHead({ title: 'Private chats', ico: 'chat', actions: html`<button class="btn sm primary" data-act="newMessage">${icon('edit', 15)} New message</button>` })}
+      <div class="vb"><div class="wrap narrow">
+        ${emptyState('lock', 'Private and end-to-end encrypted', 'Direct messages and small group threads are encrypted separately for each person. They only exist in your open tabs and are only delivered to people who are online.', html`<button class="btn primary" data-act="newMessage">${icon('edit', 16)} Start a conversation</button>`)}
+        <section class="card pad"><h2 class="sec-title">${icon('users')} Online now · ${others.length}</h2>
+          ${others.length ? others.map(p => html`<div class="hstack">${memberRow(p)}<button class="btn sm" data-act="dmUser" data-uid="${p.id}" ${p.dm === 'none' ? raw('disabled title="Not accepting messages"') : ''}>${icon('chat', 14)} Message</button></div>`) : html`<p class="muted small">Nobody else is online yet. Open Void in another tab, or link a device from the network menu at the bottom left, to try it out.</p>`}</section>
+      </div></div>`);
+  },
+};
+function openNewMessage(preselect) {
+  const sel = new Set(preselect ? [preselect] : []);
+  const m = Modal.open({
+    title: 'New private chat', sub: 'Pick one person for a direct message, or several for a group (up to 10 people).',
+    body: html`<div class="field"><input class="input" type="search" placeholder="Search people online" id="nm-q" aria-label="Search people"></div><div id="nm-list" class="stack" style="gap:2px;max-height:300px;overflow:auto"></div><div class="field mt" id="nm-name-wrap" hidden><label class="label" for="nm-name">Group name <span class="opt">optional</span></label><input class="input" id="nm-name" maxlength="40" placeholder="e.g. Raid night"></div>`,
+    foot: html`<span class="left muted small" id="nm-count"></span><button class="btn ghost" data-close>Cancel</button><button class="btn primary" id="nm-go" disabled>Start</button>`,
+  });
+  const q = $('#nm-q', m.el), list = $('#nm-list', m.el), go = $('#nm-go', m.el);
+  const draw = () => {
+    const people = Presence.others().filter(p => !Session.isBlocked(p.id) && (!q.value || p.name.toLowerCase().includes(q.value.toLowerCase()))).sort(byPresence);
+    list.innerHTML = String(people.length ? html`${people.map(p => html`<label class="member" style="cursor:pointer"><input type="checkbox" value="${p.id}" ${sel.has(p.id) ? 'checked' : ''} ${p.dm === 'none' ? 'disabled' : ''} style="accent-color:var(--accent);width:16px;height:16px">${avatar(p.av, 'sm', p.status)}<span class="member-text"><span class="member-name"><span>${p.name}</span><span class="muted small">#${p.tag}</span></span><span class="member-sub">${p.dm === 'none' ? 'Not accepting messages' : p.game ? 'Playing ' + Games.name(p.game.id) : STATUS_LABEL[p.status]}</span></span></label>`)}` : html`<p class="muted small" style="padding:8px">${q.value ? 'Nobody online matches that name.' : 'Nobody else is online right now. Private chats can only reach people who are online.'}</p>`);
+    $('#nm-name-wrap', m.el).hidden = sel.size < 2;
+    $('#nm-count', m.el).textContent = sel.size ? `${sel.size} selected` : '';
+    go.disabled = !sel.size;
+    go.textContent = sel.size > 1 ? 'Create group' : 'Message';
+  };
+  list.addEventListener('change', e => { const cb = e.target; if (cb.checked) { if (sel.size >= LIMITS.groupMax - 1) { cb.checked = false; toast({ title: 'Groups can have up to 10 people', tone: 'warn' }); return; } sel.add(cb.value); } else sel.delete(cb.value); draw(); });
+  q.addEventListener('input', draw);
+  go.addEventListener('click', async () => {
+    const ids = [...sel];
+    if (!ids.length) return;
+    go.disabled = true;
+    try {
+      if (ids.length === 1) { const t = Threads.ensureDM(ids[0], Presence.get(ids[0])); m.close(); Router.go('dm/' + encodeURIComponent(t.cid)); }
+      else { const cid = await Threads.createGroup($('#nm-name', m.el).value, ids); m.close(); Router.go('dm/' + encodeURIComponent(cid)); }
+    } catch (e) { go.disabled = false; toast({ title: "Couldn't start the thread", body: e.message, tone: 'bad' }); }
+  });
+  draw();
+}
+function openThreadMenu(anchor, cid) {
+  const t = Threads.get(cid);
+  if (!t) return;
+  const items = [];
+  if (t.kind === 'group') {
+    items.push({ label: 'Rename thread', icon: 'edit', run: async () => { const v = await promptBox({ title: 'Rename thread', label: 'Thread name', value: t.name, max: 40, placeholder: 'e.g. Raid night' }); if (v !== null) Threads.rename(cid, v).catch(e => toast({ title: "Couldn't rename", body: e.message, tone: 'bad' })); } });
+    items.push({ label: 'Add people', icon: 'plus', run: () => openAddPeople(cid) });
+  } else {
+    const o = Threads.other(t);
+    items.push({ label: 'View profile', icon: 'user', run: () => openProfile(anchor, o) });
+    items.push(Session.isBlocked(o) ? { label: 'Unblock', icon: 'ban', run: () => Session.unblock(o) } : { label: 'Block', icon: 'ban', danger: true, run: () => blockUser(o, Threads.memberName(t, o)) });
+  }
+  items.push({ sep: 1 }, { label: t.kind === 'group' ? 'Leave thread' : 'Close conversation', icon: 'logout', danger: true, run: async () => {
+    if (!(await confirmBox({ title: t.kind === 'group' ? 'Leave this thread?' : 'Close this conversation?', text: t.kind === 'group' ? "You'll stop receiving messages and its history will be removed from this tab." : 'Its history will be removed from this tab. You can message them again later.', ok: t.kind === 'group' ? 'Leave' : 'Close', danger: true }))) return;
+    await Threads.leave(cid);
+    const c = Chat.convs.get(cid); if (c) Chat.convs.delete(cid);
+    if (t.kind === 'dm') Threads.map.delete(cid);
+    Session.saveSoon(); Router.go('messages');
+  } });
+  openMenu(anchor, items, { align: 'end' });
+}
+function openAddPeople(cid) {
+  const t = Threads.get(cid);
+  const people = Presence.others().filter(p => !t.members.includes(p.id) && p.dm !== 'none' && !Session.isBlocked(p.id));
+  const m = Modal.open({ title: 'Add people', sub: `Threads can have up to ${LIMITS.groupMax} people.`, body: people.length ? html`<div class="stack" style="gap:2px;max-height:320px;overflow:auto">${people.map(p => html`<label class="member" style="cursor:pointer"><input type="checkbox" value="${p.id}" style="accent-color:var(--accent);width:16px;height:16px">${avatar(p.av, 'sm', p.status)}<span class="member-text"><span class="member-name"><span>${p.name}</span></span></span></label>`)}</div>` : html`<p class="muted">Everyone who is online is already here.</p>`, foot: html`<button class="btn ghost" data-close>Cancel</button><button class="btn primary" id="ap-go" ${people.length ? '' : 'disabled'}>Add</button>` });
+  const go = $('#ap-go', m.el);
+  if (go) go.onclick = async () => { const ids = $$('input:checked', m.el).map(x => x.value); if (!ids.length) return; m.close(); try { await Threads.addMembers(cid, ids); } catch (e) { toast({ title: "Couldn't add people", body: e.message, tone: 'bad' }); } };
+}
 const Actions = {
   go: t => Router.go(t.dataset.to),
+  newMessage: () => openNewMessage(),
+  dmUser: t => { const p = Presence.get(t.dataset.uid); if (!p) { toast({ title: 'They just went offline', tone: 'warn' }); return; } const th = Threads.ensureDM(p.id, p); Router.go('dm/' + encodeURIComponent(th.cid)); },
+  threadMenu: t => openThreadMenu(t, t.dataset.cid),
+  safetyHide: () => Safety.set(true),
+  safetyShow: () => Safety.set(false),
+  safetyBlock: t => { const u = userInfo(t.dataset.uid); blockUser(t.dataset.uid, u.name); },
   openDrawer: () => $('#app').classList.add('drawer'),
   closeDrawers: () => $('#app').classList.remove('drawer', 'aside-open'),
   toggleMembers: () => {
@@ -4377,6 +4846,7 @@ const Actions = {
   adminLock: () => { Admin.lock(); toast({ title: 'Moderator tools locked', icon: 'lock' }); },
 };
 const Inputs = {
+  dmSearch: t => { SideState.dmQuery = t.value; renderSide(); },
 };
 function bindGlobalEvents() {
   document.addEventListener('click', e => {
@@ -4674,6 +5144,11 @@ class ChatView {
     if (k === 'L') { const l = LOUNGE.find(x => x.id === a); ico = icon('hash', 32); title = 'Welcome to #' + l.name; text = l.topic + ' Everyone online can see messages here, whatever game they are playing.'; }
     else if (k === 'G') { const g = Games.get(a), c = Games.channel(a, b); ico = g.icon; title = '#' + c.name + ' · ' + g.name; text = (c.topic ? c.topic + ' ' : '') + (g.features.includes('chat') ? 'Players can also chat here from inside the game.' : ''); }
     else if (k === 'R') { const r = Rooms.known.get(a); ico = icon(r && r.locked ? 'lock' : 'users', 30); title = r ? r.name : 'Public thread'; text = (r && r.topic ? r.topic + ' · ' : '') + (r ? 'Started by ' + r.byName + '. ' : '') + (r && r.locked ? 'Messages are encrypted with the thread password. ' : '') + 'This thread disappears when everyone leaves.'; }
+    else {
+      const t = Threads.get(this.cid);
+      if (t && t.kind === 'dm') { const o = Threads.other(t); ico = avatar(Threads.memberAv(t, o), 'lg'); title = Threads.memberName(t, o); text = 'This is the start of your private chat. Messages are end-to-end encrypted and only reach each other while you are both online.'; }
+      else { ico = icon('users', 30); title = t ? Threads.title(t) : 'Private chat'; text = 'A private group thread. Messages are end-to-end encrypted for each member.'; }
+    }
     return html`<div class="chat-start"><div class="big">${ico}</div><h2>${title}</h2><p>${text}</p></div>`;
   }
   renderAll() {
@@ -4814,7 +5289,9 @@ class ChatView {
   placeholder() {
     const k = this.cid[0];
     if (k === 'L' || k === 'G') return 'Message ' + convTitle(this.cid).split(' · ')[0];
-    return 'Message ' + convTitle(this.cid);
+    if (this.cid[0] !== 'D' && this.cid[0] !== 'P') return 'Message ' + convTitle(this.cid);
+    const t = Threads.get(this.cid);
+    return t ? 'Message ' + Threads.title(t) : 'Message';
   }
   renderBar() {
     if (this.editing) setHTML(this.barEl, html`${icon('edit', 14)}<span>Editing your message</span><span class="spacer"></span><span class="muted tiny">Esc to cancel · Enter to save</span><button class="ibtn sm" data-cact="cancel" aria-label="Cancel editing">${icon('x', 14)}</button>`);
@@ -4972,7 +5449,25 @@ function chatHead(cid) {
     const joined = Rooms.joined.has(r.rid), n = Presence.inRoom(r.rid).length;
     return viewHead({ title: r.name, ico: r.locked ? 'lock' : 'users', sub: `${r.topic ? r.topic + ' · ' : ''}${plural(n, 'person', 'people')} here${r.gid ? ' · ' + Games.name(r.gid) : ''}`, actions: html`${joined ? html`<button class="btn sm ghost" data-act="leaveRoom" data-rid="${r.rid}">${icon('logout', 15)} Leave</button>` : ''}${r.by === Me.id || Admin.active ? html`<button class="ibtn" data-act="closeRoom" data-rid="${r.rid}" data-tip="Close thread for everyone" aria-label="Close thread">${icon('trash')}</button>` : ''}${Admin.active ? modChatActions(cid) : ''}${common}` });
   }
-  return viewHead({ title: 'Conversation' });
+  const t = Threads.get(cid);
+  if (!t) return viewHead({ title: 'Conversation' });
+  if (t.kind === 'dm') {
+    const o = Threads.other(t), p = Presence.get(o), st = p ? p.status : 'offline';
+    const sub = p ? (p.game ? `${STATUS_LABEL[st]} · Playing ${Games.name(p.game.id)}` : STATUS_LABEL[st] + (p.custom ? ' · ' + p.custom : '')) : "Offline · messages can't be delivered right now";
+    return viewHead({ title: Threads.memberName(t, o), ico: avatar(Threads.memberAv(t, o), 'sm', st), sub, actions: html`<button class="ibtn" data-act="profile" data-uid="${o}" data-tip="Profile" aria-label="View profile">${icon('user')}</button>${common}<button class="ibtn" data-act="threadMenu" data-cid="${cid}" data-tip="More" aria-label="More options">${icon('more')}</button>` });
+  }
+  const online = t.members.filter(id => id !== Me.id && Presence.get(id)).length;
+  return viewHead({ title: Threads.title(t), ico: 'users', sub: `${plural(t.members.length, 'member')} · ${online} other${online === 1 ? '' : 's'} online · end-to-end encrypted`, actions: html`${common}<button class="ibtn" data-act="threadMenu" data-cid="${cid}" data-tip="More" aria-label="More options">${icon('more')}</button>` });
+}
+/* Reminder shown at the top of every private chat. Minimizing it lasts for this tab. */
+const Safety = {
+  min: Store.ss.get('void1.safetyMin', false) === true,
+  set(v) { this.min = !!v; Store.ss.set('void1.safetyMin', this.min); if (Router.view && Router.view.renderSafety) Router.view.renderSafety(); },
+};
+function safetyBar(cid) {
+  if (Safety.min) return html`<button class="safety-min" data-act="safetyShow" aria-label="Show safety reminder">${icon('shieldCheck', 13)} Stay safe</button>`;
+  const t = Threads.get(cid), o = t && t.kind === 'dm' ? Threads.other(t) : null;
+  return html`<div class="safety" role="note">${icon('shieldCheck', 17)}<div class="safety-text"><b>Keep personal info private.</b> Don't share passwords, your address, school, phone number or anything you wouldn't post publicly. If someone makes you uncomfortable, block them. You don't need a reason, and you shouldn't feel bad about it.</div>${o && !Session.isBlocked(o) ? html`<button class="btn sm" data-act="safetyBlock" data-uid="${o}">${icon('ban', 14)} Block</button>` : ''}<button class="ibtn sm" data-act="safetyHide" aria-label="Minimize safety reminder" data-tip="Minimize">${icon('chevronDown', 15)}</button></div>`;
 }
 function lockScreen(r) {
   return html`<div class="lockscreen"><div class="card pad center-text" style="max-width:440px;padding:32px"><div class="shield">${icon('lock', 32)}</div><h2>${r.name}</h2>${r.topic ? html`<p class="dim mt">${r.topic}</p>` : ''}<p class="muted small mt">Started by ${r.byName}. This thread is password-protected: messages are encrypted with its password, so you need it to read or post.</p><button class="btn primary mt-lg" data-act="unlockRoom" data-rid="${r.rid}">${icon('key', 16)} Enter password</button></div></div>`;
@@ -4984,7 +5479,7 @@ function announcementsHTML() {
 Views.chat = {
   mount(el, r) {
     this.el = el; this.cid = r.cid; this.chat = null;
-    el.innerHTML = String(html`<div id="chatHead"></div><div id="chatKick"></div><div id="chatBody" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>`);
+    el.innerHTML = String(html`<div id="chatHead"></div><div id="chatSafety" style="display:flex;flex-direction:column"></div><div id="chatKick"></div><div id="chatBody" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>`);
     if (this.cid[0] === 'R') { const room = Rooms.known.get(this.cid.slice(2)); if (room && !room.locked && !Rooms.joined.has(room.rid)) Rooms.join(room.rid); }
     this.renderHead();
     this.mountBody();
@@ -5003,7 +5498,8 @@ Views.chat = {
     this.chat = new ChatView(body, this.cid);
     if (matchMedia('(hover: hover)').matches) setTimeout(() => { if (this.chat && this.chat.canWrite && !Modal.top()) this.chat.input.focus({ preventScroll: true }); }, 30);
   },
-  renderHead() { setHTML($('#chatHead', this.el), chatHead(this.cid)); this.renderKick(); },
+  renderHead() { setHTML($('#chatHead', this.el), chatHead(this.cid)); this.renderSafety(); this.renderKick(); },
+  renderSafety() { const host = $('#chatSafety', this.el); if (host) setHTML(host, Chat.isPrivate(this.cid) ? safetyBar(this.cid) : ''); },
   renderKick() {
     const host = $('#chatKick', this.el);
     if (!host) return;
@@ -5325,7 +5821,7 @@ function openProfile(anchor, id) {
       ${g ? html`<div class="pcard-sec"><h4>Playing</h4><div class="playing"><span class="gi" style="--g:${Games.gradient(g)}">${g.icon}</span><div style="min-width:0"><b>${g.name}</b>${u.game.details ? html`<div class="small dim">${u.game.details}</div>` : ''}${u.game.state ? html`<div class="small muted">${u.game.state}</div>` : ''}</div></div></div>` : ''}
       ${u.bio ? html`<div class="pcard-sec"><h4>About</h4><div class="md small">${raw(renderInline(u.bio))}</div></div>` : ''}
       <div class="pcard-sec"><h4>Status</h4><div class="hstack small"><i class="dot ${st}"></i>${STATUS_LABEL[st]}${u.since ? html`<span class="muted">· here since ${fmtTime(u.since)}</span>` : ''}</div>${me && Session.achCount() ? html`<div class="small muted" style="margin-top:4px">🏆 ${plural(Session.achCount(), 'achievement')} this session</div>` : ''}${Admin.active && u.dev ? html`<div class="tiny muted mono" style="margin-top:4px">Device tag ${u.dev}</div>` : ''}</div>
-      ${me ? '' : html`<div class="hstack"><button class="btn sm" data-pa="mention" style="flex:1">${icon('at', 15)} Mention</button>${Kick.canStartFor(id) ? html`<button class="btn sm danger" data-pa="kick" style="flex:1">${icon('door', 15)} Vote to kick</button>` : ''}<button class="ibtn sm" data-pa="more" aria-label="More options">${icon('more', 16)}</button></div>`}
+      ${me ? '' : html`<div class="hstack"><button class="btn sm primary" data-pa="dm" style="flex:1" ${u.online && u.dm !== 'none' && !Session.isBlocked(id) ? '' : 'disabled'}>${icon('chat', 15)} Message</button><button class="btn sm" data-pa="mention" style="flex:1">${icon('at', 15)} Mention</button>${Kick.canStartFor(id) ? html`<button class="btn sm danger" data-pa="kick" style="flex:1">${icon('door', 15)} Vote to kick</button>` : ''}<button class="ibtn sm" data-pa="more" aria-label="More options">${icon('more', 16)}</button></div>`}
     </div></div>`, { side: 'right' });
   el.addEventListener('click', e => {
     const b = e.target.closest('[data-pa]');
@@ -5333,6 +5829,7 @@ function openProfile(anchor, id) {
     const a = b.dataset.pa;
     if (a === 'edit') { Pop.close(); openSettings('profile'); }
     else if (a === 'kick') { Pop.close(); Kick.ask(id); }
+    else if (a === 'dm') { Pop.close(); const t = Threads.ensureDM(id, u); Router.go('dm/' + encodeURIComponent(t.cid)); }
     else if (a === 'mention') { Pop.close(); const v = [...ChatViews].find(x => x.isVisible() && x.canWrite); if (v) v.insert('@' + u.name + '#' + u.tag + ' '); else toast({ title: 'Open a chat to mention them', icon: 'at' }); }
     else if (a === 'more') {
       const items = [
@@ -5387,7 +5884,7 @@ function openReport(target) {
 const DURATIONS = [[10 * 60000, '10 minutes'], [60 * 60000, '1 hour'], [24 * 3600000, '1 day'], [7 * 24 * 3600000, '1 week']];
 function openMute(uid, name) {
   const m = Modal.open({
-    title: `Mute ${name}`, sub: "They won't be able to post in public channels or threads. Private threads aren't affected.", size: 'sm',
+    title: `Mute ${name}`, sub: "They won't be able to post in public channels or threads. Private chats aren't affected.", size: 'sm',
     body: html`<div class="field"><label class="label" for="mu-d">For how long?</label><select class="select" id="mu-d">${DURATIONS.map(([ms, l], i) => html`<option value="${ms}" ${i === 1 ? 'selected' : ''}>${l}</option>`)}</select></div><div class="field" style="margin:0"><label class="label" for="mu-r">Reason <span class="opt">shown to them</span></label><input class="input" id="mu-r" maxlength="200" placeholder="e.g. Spamming #lounge"></div>`,
     foot: html`<button class="btn ghost" data-close>Cancel</button><button class="btn danger" id="mu-go">${icon('volumeX', 15)} Mute</button>`,
   });
@@ -5435,7 +5932,7 @@ const Embed = {
     document.documentElement.classList.add('embedded');
     const g = this.game;
     const game = g || { id: this.gid, name: this.gid, channels: [{ id: 'general', name: 'general', topic: '' }], features: [] };
-    this.bridge = new Bridge({ game, getWin: () => window.parent, origins: g ? gameOrigins(g) : ['*'], sandbox: !g, listed: !!g, onConnect: () => this.onConnect() });
+    this.bridge = new Bridge({ game, getWin: () => window.parent, origins: g ? gameOrigins(g) : ['*'], sandbox: !g, listed: !!g, onConnect: () => this.onConnect(), onSuspect: (code, origin) => KitWatch.signal(game, origin, code) });
   },
   onConnect() {
     this.verified = true;
@@ -5465,6 +5962,110 @@ const Players = {
   beat() { if (Embed.verified && Embed.game) Net.send({ t: 'player', gid: Embed.gid }, { mod: false }).catch(() => {}); },
 };
 Net.on('player', (ev, env) => Players.on(ev, env));
+
+/* Suspicious Connection Kit alerts. A Void window inside a game that sees a failed integrity check,
+   forged or replayed messages, or kit traffic from an unlisted website sends a moderator-sealed
+   alert right away and again every minute while that window stays open. Only moderators can open
+   it. Moderators get a notification for each active incident, repeated every 2 minutes. */
+const KIT_REASONS = {
+  kit_modified: 'Modified kit (failed the integrity check)', bad_signature: 'Forged messages (bad signature)',
+  bad_sequence: 'Replayed or out-of-order messages', not_verified: 'Messages sent before verification',
+  ignored: 'Repeated handshakes on a live connection', proof_flood: 'Flood of proof attempts', bad_origin: 'Kit traffic from an unlisted website',
+};
+const KIT_ACTIVE = 150000, KIT_REPEAT = 120000;
+const KitWatch = {
+  local: null, alerts: new Map(), opened: new Map(), incidents: new Map(), ticker: null,
+  /* Window side */
+  signal(game, origin, code) {
+    if (!game || !Games.has(game.id)) return;
+    let s = this.local;
+    if (!s) s = this.local = { gid: game.id, gname: game.name, origins: new Set(), reasons: {}, count: 0, first: now(), last: now(), timer: null, sending: false };
+    if (origin) s.origins.add(String(origin).slice(0, 120));
+    s.reasons[code] = (s.reasons[code] || 0) + 1; s.count++; s.last = now();
+    if (!s.timer) { this.report(); s.timer = setInterval(() => this.report(), 60000); }
+  },
+  async report() {
+    const s = this.local;
+    if (!s || !Me.profile || s.sending) return;
+    s.sending = true;
+    try {
+      const origins = [...s.origins].slice(0, 5);
+      const sealed = await sealForMods({ kind: 'kit', gid: s.gid, gname: s.gname, origins, reasons: s.reasons, count: s.count, first: s.first, last: s.last, reporter: { id: Me.id, name: Me.profile.name, tag: Me.profile.tag, dev: Device.id } });
+      await Net.sendAnon({ t: 'kitalert', sealed });
+    } catch (e) { console.warn('[void] kit alert', e); }
+    s.sending = false;
+  },
+  /* Everyone stores sealed alerts briefly (so moderators who sign in or connect later still get them). */
+  onAlert(ev, env) {
+    if (!ev.sealed || typeof ev.sealed !== 'object' || typeof ev.sealed.ct !== 'string' || ev.sealed.ct.length > 8000) return;
+    if (now() - ev.ts > 10 * 60000 || this.alerts.has(ev.id)) return;
+    const e = Object.assign({}, env); delete e.h;
+    this.alerts.set(ev.id, { ev, env: e });
+    if (this.alerts.size > 300) this.prune(true);
+    if (Admin.active) this.open();
+  },
+  prune(force) {
+    const cut = now() - 10 * 60000;
+    for (const [id, a] of this.alerts) if (a.ev.ts < cut) { this.alerts.delete(id); this.opened.delete(id); }
+    if (force) while (this.alerts.size > 250) { const k = this.alerts.keys().next().value; this.alerts.delete(k); this.opened.delete(k); }
+  },
+  envs() { this.prune(); return [...this.alerts.values()].map(a => a.env); },
+  /* Moderator side */
+  async open() {
+    if (!Admin.active) return;
+    let changed = false;
+    for (const [id, a] of this.alerts) {
+      if (this.opened.has(id)) continue;
+      const d = await openSealed(a.ev.sealed);
+      this.opened.set(id, d);
+      if (!d || d.kind !== 'kit' || typeof d.gid !== 'string') continue;
+      const origins = arr(d.origins).filter(o => typeof o === 'string').map(o => o.slice(0, 120)).slice(0, 5);
+      const key = d.gid + '|' + (origins[0] || '');
+      let inc = this.incidents.get(key);
+      if (!inc) { inc = { key, gid: d.gid, gname: cleanLine(d.gname, 60) || d.gid, origins: new Set(), reasons: {}, reporters: new Map(), first: a.ev.ts, last: 0, notified: 0, alerts: 0 }; this.incidents.set(key, inc); }
+      for (const o of origins) inc.origins.add(o);
+      const r = d.reporter && typeof d.reporter === 'object' ? d.reporter : {};
+      const rid_ = typeof r.id === 'string' ? r.id : a.ev.by;
+      const reasons = {};
+      for (const [k, v] of Object.entries(d.reasons && typeof d.reasons === 'object' ? d.reasons : {})) if (KIT_REASONS[k]) reasons[k] = Math.min(1e6, Number(v) | 0);
+      inc.reporters.set(rid_, { name: cleanLine(r.name, LIMITS.name) || 'Someone', tag: String(r.tag || '').replace(/\D/g, '').slice(0, 4), dev: cleanLine(r.dev, 24), reasons, count: Number(d.count) | 0, ts: a.ev.ts });
+      inc.reasons = {};
+      for (const rep of inc.reporters.values()) for (const [k, v] of Object.entries(rep.reasons)) inc.reasons[k] = (inc.reasons[k] || 0) + v;
+      inc.first = Math.min(inc.first, Number(d.first) || a.ev.ts);
+      inc.last = Math.max(inc.last, a.ev.ts);
+      inc.alerts++;
+      changed = true;
+    }
+    if (changed) { invalidate('kits'); this.tick(); }
+  },
+  active(inc) { return now() - inc.last < KIT_ACTIVE; },
+  list() { return [...this.incidents.values()].sort((a, b) => b.last - a.last); },
+  activeCount() { let n = 0; for (const inc of this.incidents.values()) if (this.active(inc)) n++; return n; },
+  start() { if (!this.ticker) this.ticker = setInterval(() => this.tick(), 5000); },
+  tick() {
+    if (!Admin.active) return;
+    for (const inc of this.incidents.values()) {
+      if (!this.active(inc) || now() - inc.notified < KIT_REPEAT) continue;
+      inc.notified = now();
+      this.notify(inc);
+    }
+  },
+  describe(inc) {
+    const top = Object.entries(inc.reasons).sort((a, b) => b[1] - a[1]).map(([k]) => KIT_REASONS[k].replace(/ \(.*\)$/, '').toLowerCase());
+    return top.slice(0, 2).join(', ') || 'failed checks';
+  },
+  notify(inc) {
+    const origin = [...inc.origins][0] || 'an unknown website';
+    const title = 'Suspicious Connection Kit · ' + inc.gname;
+    const body = `${this.describe(inc)} from ${origin}. Seen by ${plural(inc.reporters.size, 'player')}. Still active.`;
+    toast({ title, body, tone: 'bad', icon: 'alert', timeout: 15000, actions: [{ label: 'Review', run: () => Router.go('admin/kits') }] });
+    Notify.desktop(title, body, 'admin/kits', 'kit-' + inc.key);
+    if (Settings.sounds && typeof Sound !== 'undefined') Sound.ping();
+  },
+  lock() { this.opened.clear(); this.incidents.clear(); invalidate('kits'); },
+};
+Net.on('kitalert', (ev, env) => KitWatch.onAlert(ev, env));
+window.addEventListener('pagehide', () => { if (KitWatch.local && KitWatch.local.timer) clearInterval(KitWatch.local.timer); });
 
 /* ---------------------------------------------------------------------
    22 · Developer portal: guide, Connection Kit, sandbox, submission form
@@ -5891,6 +6492,16 @@ function describeMod(ev) {
 }
 const ContactCache = new Map();
 const AdminSections = {
+  kits() {
+    const list = KitWatch.list();
+    const reasonRows = inc => Object.entries(inc.reasons).sort((a, b) => b[1] - a[1]).map(([k, v]) => html`<li>${KIT_REASONS[k]} <span class="muted">× ${v}</span></li>`);
+    return html`<p class="dim small mb">Void windows inside games report a Connection Kit that fails its checks: a modified kit, forged or replayed messages, or kit traffic from a website that isn't on the game's page. Alerts are sealed so only moderators can read them. While an incident is active (an alert in the last ${Math.round(KIT_ACTIVE / 60000 * 10) / 10} minutes), you're notified every 2 minutes.</p>
+      ${list.length ? list.map(inc => { const on = KitWatch.active(inc), g = Games.get(inc.gid); return html`<article class="card pad mb"><div class="hstack wrapf" style="justify-content:space-between"><h3 class="sec-title" style="margin:0">${icon('alert', 18)} ${g ? html`<a href="#/game/${g.id}">${inc.gname}</a>` : inc.gname}</h3><span class="badge ${on ? 'bad' : ''}">${on ? 'Active' : 'Quiet'}</span></div>
+        <p class="small mt"><b>From:</b> ${[...inc.origins].join(', ') || 'unknown website'}</p>
+        <ul class="small dim" style="margin:6px 0 0;padding-left:20px">${reasonRows(inc)}</ul>
+        <p class="muted tiny mt">First seen ${fmtRel(inc.first)} · last alert ${fmtRel(inc.last)} · ${plural(inc.alerts, 'alert')} · seen by ${[...inc.reporters.values()].map(r => r.name + (r.tag ? '#' + r.tag : '')).join(', ')}</p>
+        ${g ? html`<div class="hstack wrapf mt"><button class="btn sm" data-act="go" data-to="admin/games">${icon('gamepad', 14)} Manage games</button></div>` : ''}</article>`; }) : emptyState('shieldCheck', 'No suspicious kits', 'Nothing has failed a Connection Kit check while you were signed in. Alerts from the last 10 minutes appear here too.')}`;
+  },
   dashboard() {
     const st = Mod.state, bans = [...st.bans.values()].filter(b => !b.until || b.until > now()).length;
     const stat = (to, n, label, ico, alert) => html`<a class="stat ${alert && n ? 'alert' : ''}" href="#/admin/${to}"><span class="stat-top"><span class="stat-label">${label}</span>${icon(ico, 18)}</span><span class="stat-num">${n}</span></a>`;
@@ -5968,7 +6579,7 @@ const AdminSections = {
 };
 Views.admin = {
   mount(el, r) { this.el = el; this.section = r.section; this.render(); },
-  update(sc) { if (!Admin.active) { if (sc.has('admin')) this.render(); return; } if (['mod', 'subs', 'reports', 'wiki', 'presence', 'games', 'admin', 'clock'].some(s => sc.has(s))) this.render(); },
+  update(sc) { if (!Admin.active) { if (sc.has('admin')) this.render(); return; } if (['mod', 'subs', 'reports', 'kits', 'wiki', 'presence', 'games', 'admin', 'clock'].some(s => sc.has(s))) this.render(); },
   render() {
     if (!Admin.active) return this.renderLogin();
     const [title, ico] = ADMIN_SECTIONS[this.section];
@@ -6174,6 +6785,7 @@ const SettingsTabs = {
   notifications() {
     const perm = 'Notification' in window ? Notification.permission : 'unsupported';
     return html`<h2>Notifications</h2><p class="muted small mb">You're notified about private messages, @mentions and replies. Set your status to <b>Do not disturb</b> to silence everything.</p>
+      ${setRow('Who can start private chats with you', 'People you already talk to can always message you.', segCtl('dmPolicy', Settings.dmPolicy, [['all', 'Anyone online'], ['none', 'Nobody new']]))}
       ${setRow('Desktop notifications', perm === 'denied' ? 'Blocked by your browser. Allow notifications for this page in your browser settings.' : perm === 'unsupported' ? "This browser doesn't support desktop notifications." : 'Shown when Void is in the background.', sw('desktop', Settings.desktop && perm === 'granted', 'Desktop notifications'))}
       ${setRow('Sounds', 'A soft chime for new notifications.', sw('sounds', Settings.sounds, 'Sounds'))}
       ${setRow('Message previews', 'Show message text in notifications.', sw('previews', Settings.previews, 'Message previews'))}
@@ -6219,7 +6831,7 @@ function openSettings(tab = 'profile') {
     const nav = e.target.closest('[data-st]');
     if (nav) { e.preventDefault(); st.tab = nav.dataset.st; draw(); return; }
     const sg = e.target.closest('[data-seg]');
-    if (sg) { saveSettings({ [sg.dataset.seg]: sg.dataset.v }); draw(); return; }
+    if (sg) { saveSettings({ [sg.dataset.seg]: sg.dataset.v }); if (sg.dataset.seg === 'dmPolicy') Presence.announceSoon(); draw(); return; }
     const ac = e.target.closest('[data-accent]');
     if (ac) { saveSettings({ accent: ac.dataset.accent }); draw(); return; }
     const pc = e.target.closest('[data-pc]');
@@ -6263,7 +6875,7 @@ function openSettings(tab = 'profile') {
 const NetUI = { draw: null };
 function openNetwork(mode = 'overview', code = '') {
   const st = { mode, invite: '', reply: '', status: '', busy: false, error: '' };
-  const m = Modal.open({ size: 'lg', title: 'Network', sub: 'Void has no server. This is how you are connected right now.', body: '<div id="netBody"></div>', onClose: () => { NetUI.draw = null; } });
+  const m = Modal.open({ size: 'lg', title: 'Network', sub: 'Void has no server of its own. This is how you are connected right now.', body: raw('<div id="netBody"></div>'), onClose: () => { NetUI.draw = null; } });
   const body = $('#netBody', m.el);
   const draw = () => {
     if (!document.contains(body)) return;
@@ -6275,11 +6887,14 @@ function openNetwork(mode = 'overview', code = '') {
         <div class="stat"><span class="stat-top"><span class="stat-label">Linked devices</span>${icon('link', 16)}</span><span class="stat-num">${links.length}</span><span class="muted tiny">via Direct Link</span></div>
         <div class="stat"><span class="stat-top"><span class="stat-label">People online</span>${icon('users', 16)}</span><span class="stat-num">${people}</span><span class="muted tiny">including you</span></div>
         <div class="stat"><span class="stat-top"><span class="stat-label">Game connection</span>${icon('gamepad', 16)}</span><span class="stat-num" style="font-size:1.1rem;padding:8px 0">${Embed.gid ? (Embed.game ? Embed.game.name : Embed.gid) : 'None'}</span><span class="muted tiny">${Embed.gid ? (Embed.verified ? 'Connection Kit verified' : 'Waiting for the kit') : 'Void is not open inside a game'}</span></div></div>
+        <section class="card pad mb"><h3 class="sec-title">${icon('globe')} Relay <span class="badge ${Relay.state === 'online' ? 'ok' : Relay.target() ? 'warn' : ''}">${Relay.label()}</span></h3><p class="small dim mb">A relay passes Void's signed messages between everyone connected to it, so Void windows inside games, other browsers and other devices all reach each other. It can't read private chats or forge anything: every message is still signed and checked here.</p>
+          <div class="hstack wrapf"><input class="input" id="nv-relay" style="flex:1;min-width:220px" placeholder="${RELAY_DEFAULT || 'wss://void-relay.your-name.workers.dev'}" value="${st.relay != null ? st.relay : Settings.relayUrl}" aria-label="Relay address" spellcheck="false" autocomplete="off"><button class="btn" data-nm="relaySave">${icon('check', 15)} Save</button><button class="btn ghost" data-nm="relayToggle">${Settings.relayOff ? 'Turn on' : 'Turn off'}</button></div>
+          <p class="muted tiny mt">${RELAY_DEFAULT ? html`Leave the box empty to use this copy's built-in relay (${RELAY_DEFAULT}).` : html`This copy of Void has no built-in relay. Paste a relay address starting with wss://.`}${Relay.state === 'online' ? html` Connected ${fmtRel(Relay.since)}.` : Relay.lastError ? html` ${Relay.lastError}` : ''} The relay sees your IP address and when you're online.</p></section>
         <section class="card pad mb"><h3 class="sec-title">${icon('link')} Direct Link <span class="badge warn">Beta</span></h3><p class="small dim mb">Connect a friend's browser or another device directly, with no server in between. You swap two codes: an invite and a reply. Once linked, chats, presence, wikis and moderation sync both ways, and through them to anyone else they're linked with.</p>
           ${Links.supported() ? html`<div class="hstack wrapf"><button class="btn primary" data-nm="invite">${icon('plus', 15)} Create an invite</button><button class="btn" data-nm="join">${icon('key', 15)} I have an invite code</button></div>` : html`<p class="err-text">This browser doesn't support WebRTC, so Direct Link isn't available.</p>`}
           <p class="muted tiny mt">${Settings.stun ? 'Uses a public STUN server (stun.l.google.com) to find a route between networks. No messages pass through it.' : 'STUN is off, so linking only works between devices on the same local network.'} Linked peers can see each other's IP address, as with any peer-to-peer connection.</p></section>
         ${links.length ? html`<section class="card pad mb"><h3 class="sec-title">${icon('network')} Linked devices</h3>${links.map(l => html`<div class="setting"><div class="setting-text"><div class="setting-title">${l.peer ? l.peer.name : 'Connecting…'}${l.peer && l.peer.tag ? html` <span class="muted small">#${l.peer.tag}</span>` : ''}</div><div class="setting-desc">${l.role === 'host' ? 'You invited them' : 'You joined their invite'} · linked ${fmtRel(l.created)}</div></div><button class="btn sm danger" data-nm="close" data-id="${l.id}">Disconnect</button></div>`)}</section>` : ''}
-        <details class="card pad"><summary style="cursor:pointer;font-weight:650">How Void stores data</summary><ul class="small dim" style="margin:10px 0 0;padding-left:20px"><li><b>Tabs in this browser</b> talk instantly over a BroadcastChannel. Each tab is its own temporary person.</li><li><b>Your profile, chats and threads</b> live only in this tab (sessionStorage) and vanish when it closes.</li><li><b>Wikis, moderation records and submissions</b> are signed records kept on each device (localStorage). They sync when devices link.</li><li><b>Everything is signed</b> with the sender's key, private threads are end-to-end encrypted, and moderator actions carry a moderator signature that every device checks.</li></ul></details>`;
+        <details class="card pad"><summary style="cursor:pointer;font-weight:650">How Void stores data</summary><ul class="small dim" style="margin:10px 0 0;padding-left:20px"><li><b>The relay</b>, if one is set up, forwards signed messages between every connected Void window and keeps nothing.</li><li><b>Tabs in this browser</b> talk instantly over a BroadcastChannel. Each tab is its own temporary person.</li><li><b>Your profile, chats and threads</b> live only in this tab (sessionStorage) and vanish when it closes.</li><li><b>Wikis, moderation records and submissions</b> are signed records kept on each device (localStorage). They sync when devices link.</li><li><b>Everything is signed</b> with the sender's key, private threads are end-to-end encrypted, and moderator actions carry a moderator signature that every device checks.</li></ul></details>`;
     } else if (st.mode === 'invite') {
       const host = Links.host;
       h = html`<button class="btn sm ghost mb" data-nm="back">${icon('arrowLeft', 14)} Back</button>
@@ -6301,7 +6916,7 @@ function openNetwork(mode = 'overview', code = '') {
     if (focusId) { const f = $('#' + focusId, body); if (f) f.focus(); }
   };
   NetUI.draw = draw;
-  body.addEventListener('input', e => { if (e.target.id === 'nv-in') code = e.target.value; if (e.target.id === 'nv-reply') st.reply = e.target.value; });
+  body.addEventListener('input', e => { if (e.target.id === 'nv-relay') st.relay = e.target.value; if (e.target.id === 'nv-in') code = e.target.value; if (e.target.id === 'nv-reply') st.reply = e.target.value; });
   body.addEventListener('click', async e => {
     const b = e.target.closest('[data-nm]');
     if (!b || b.disabled) return;
@@ -6327,6 +6942,12 @@ function openNetwork(mode = 'overview', code = '') {
       try { const r = await Links.acceptInvite(code); st.reply = r.reply; st.from = r.from; } catch (err) { st.error = err.message || "That invite didn't work. Ask for a new one."; }
       st.busy = false; draw();
     } else if (a === 'close') { const l = Net.links.get(b.dataset.id); if (l) l.close(); draw(); }
+    else if (a === 'relaySave') {
+      const v = (($('#nv-relay', body) || {}).value || '').trim();
+      if (v && !/^wss?:\/\/[^\s]+$/i.test(v)) { toast({ title: 'That address won\'t work', body: 'Relay addresses start with wss:// (or ws:// for testing).', tone: 'warn' }); return; }
+      st.relay = null; saveSettings({ relayUrl: v, relayOff: false }); Relay.restart(); draw();
+      toast({ title: Relay.target() ? 'Connecting to the relay…' : 'Relay cleared', icon: 'globe' });
+    } else if (a === 'relayToggle') { saveSettings({ relayOff: !Settings.relayOff }); Relay.restart(); draw(); }
   });
   draw();
 }
@@ -6342,7 +6963,9 @@ function buildSwitcher() {
     for (const c of g.channels) add('#' + c.name, g.name, icon('hash', 16), () => Router.go(`game/${g.id}/c/${c.id}`));
   }
   for (const r of [...Rooms.known.values()].filter(x => !x.closed)) add(r.name, 'Public thread' + (r.gid ? ' · ' + Games.name(r.gid) : ''), icon(r.locked ? 'lock' : 'users', 16), () => Router.go('room/' + r.rid));
-  for (const p of Presence.others()) add(p.name + '#' + p.tag, 'Person · ' + STATUS_LABEL[p.status], avatar(p.av, 'xs'), () => openProfile({ x: innerWidth / 2 - 155, y: 120 }, p.id));
+  add('Private chats', 'Page', icon('chat', 16), () => Router.go('messages'), 'dm messages private');
+  for (const t of Threads.list()) add(Threads.title(t), t.kind === 'dm' ? 'Direct message' : 'Private chat', icon('chat', 16), () => Router.go('dm/' + encodeURIComponent(t.cid)));
+  for (const p of Presence.others()) add(p.name + '#' + p.tag, 'Message · ' + STATUS_LABEL[p.status], avatar(p.av, 'xs'), () => { if (Session.isBlocked(p.id)) { openProfile({ x: innerWidth / 2 - 155, y: 120 }, p.id); return; } const t = Threads.ensureDM(p.id, p); Router.go('dm/' + encodeURIComponent(t.cid)); });
   for (const [k, [l]] of Object.entries(DEV_SECTIONS)) add(l, 'Developers', icon('code', 16), () => Router.go('dev/' + k));
   add('Moderation', 'Page', icon('shield', 16), () => Router.go('admin'), 'admin moderator');
   add('Settings', 'Page', icon('settings', 16), () => openSettings(), 'preferences theme profile');
@@ -6424,6 +7047,7 @@ async function startApp(fresh) {
   await Session.restore();
   Wiki.prime();
   Presence.start();
+  Relay.start();
   let joinCode = null;
   if (/^#join=/.test(location.hash)) { joinCode = decodeURIComponent(location.hash.slice(6)); history.replaceState(null, '', location.pathname + location.search + '#/home'); }
   if (Embed.gid && !location.hash) history.replaceState(null, '', location.pathname + location.search + (Games.has(Embed.gid) ? '#/game/' + Embed.gid : '#/lounge/lounge'));
