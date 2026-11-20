@@ -1217,6 +1217,8 @@ The Connection Kit is the only code Void accepts a game connection from:
 4. **Registered games only.** The `gameId` must be the ID of a game a moderator approved, and it must match exactly. Unknown IDs are refused.
 5. **Website and page check.** Void only accepts the kit from your listed website, or from the websites of the links on your game page. When Void can see the page address (always when your game is on the same website as Void, and on other websites when your page sends it), the page also has to be inside one of your listed addresses. A game at `https://your-name.github.io/other-game/` can't use the ID of `https://your-name.github.io/your-game/`.
 
+**Except URL.** If your game runs inside an embed or on a host whose address changes, so the kit can't run on your listed website, ask a moderator to turn on **Except URL** for your game. Your website stays listed on your page, but Void stops checking where the kit runs. Every other check still applies.
+
 **Sharing a website with other games** (for example itch.io, or several games on one GitHub Pages account): add this to your page's `<head>` so Void can see which page the kit is on. Without it, Void refuses games on shared websites, because it can't tell them apart.
 
 ```html
@@ -1678,7 +1680,7 @@ form button:disabled,form input:disabled{opacity:.5;cursor:not-allowed}
 /* ---------------------------------------------------------------------
    1 · Config & constants
    --------------------------------------------------------------------- */
-const VOID = { version: '0.2', build: '0.2.2', protocol: '1' };
+const VOID = { version: '0.2', build: '0.2.3', protocol: '1' };
 
 /* The official Void address (GitHub Pages). Games put it in the kit's voidUrl. */
 const VOID_HOME = 'https://heyimdroid.github.io/void_host-/';
@@ -2718,7 +2720,7 @@ const Mod = {
   refresh() { this.derive(); Games.derive(); Wiki.reset(); invalidate('mod', 'games', 'wiki', 'subs', 'reports', 'presence', 'rooms', 'chat'); },
   derive() {
     const st = { bans: new Map(), devBans: new Map(), mutes: new Map(), filter: [], filterRe: null, slow: {}, deleted: new Set(), cleared: {}, ann: [], annDel: new Set(), approved: new Map(), removed: new Set(), patches: new Map(), featured: new Map(), subDec: new Map(), repRes: new Map(), closedRooms: new Set(), strictVotes: false, entries: [] };
-    st.paused = new Map();
+    st.paused = new Map(); st.except = new Set();
     const evs = this.log.events().sort((a, b) => a.ts - b.ts || (a.id < b.id ? -1 : 1));
     for (const ev of evs) {
       st.entries.push(ev);
@@ -2740,6 +2742,7 @@ const Mod = {
         case 'mod.game.restore': st.removed.delete(ev.gid); break;
         case 'mod.game.feature': if (typeof ev.gid === 'string') st.featured.set(ev.gid, !!ev.on); break;
         case 'mod.game.pause': if (typeof ev.gid === 'string' && (ev.gid === '*' || /^[a-z0-9-]{1,40}$/.test(ev.gid))) st.paused.set(ev.gid, { gid: ev.gid, until: Number(ev.until) || 0, reason: cleanLine(ev.reason, 200), ts: ev.ts, by: who }); break;
+        case 'mod.game.except': if (typeof ev.gid === 'string') { if (ev.on) st.except.add(ev.gid); else st.except.delete(ev.gid); } break;
         case 'mod.game.unpause': if (typeof ev.gid === 'string') st.paused.delete(ev.gid); break;
         case 'mod.sub.decide': if (typeof ev.sid === 'string' && ['rejected', 'changes'].includes(ev.decision)) st.subDec.set(ev.sid, { decision: ev.decision, note: cleanText(ev.note, 1000), ts: ev.ts, by: who }); break;
         case 'mod.report.resolve': if (typeof ev.rid === 'string') st.repRes.set(ev.rid, { note: cleanLine(ev.note, 300), action: cleanLine(ev.action, 40), ts: ev.ts, by: who }); break;
@@ -2776,6 +2779,8 @@ const Mod = {
   muteOf(id, at = now()) { const m = this.state.mutes.get(id); return m && m.until > at ? m : null; },
   slowOf(cid) { return this.state.slow[cid] || 0; },
   /* An active connection pause for this game (its own, or the "all games" pause), or null. */
+  /* Moderators can let a game connect from any website (its listed URL stays listed). */
+  excepted(gid) { return !!(this.state && this.state.except && this.state.except.has(gid)); },
   pauseOf(gid) {
     const st = this.state; if (!st || !st.paused) return null;
     const t = now();
@@ -6019,6 +6024,7 @@ function pageMatches(g, page) {
 function sharedSite(g) { const mine = gameOrigins(g); return Games.list().filter(h => h.id !== g.id && gameOrigins(h).some(o => mine.includes(o))); }
 /* Decides whether a kit on `origin` (and, when Void can see it, on `page`) may connect as game g. Returns null or a refusal. */
 function gameAccess(g, origin, page) {
+  if (Mod.excepted(g.id)) return null;   // Except URL: website and page checks are skipped for this game
   const origins = gameOrigins(g);
   if (!origins.includes(origin)) return { code: 'bad_origin', suspect: true, message: `Void refused the connection: "${g.id}" is registered for ${origins.join(', ') || 'another website'}, not ${origin}.` };
   if (page) {
@@ -6665,6 +6671,7 @@ function describeMod(ev) {
     case 'mod.game.restore': return `Restored ${Games.name(ev.gid)}`;
     case 'mod.game.feature': return `${ev.on ? 'Featured' : 'Unfeatured'} ${Games.name(ev.gid)}`;
     case 'mod.game.pause': return `Paused connections for ${ev.gid === '*' ? 'all games' : Games.name(ev.gid)}${ev.until ? ' for ' + fmtDur(ev.until - ev.ts) : ' until resumed'}${ev.reason ? ' · ' + cleanLine(ev.reason, 120) : ''}`;
+    case 'mod.game.except': return `${ev.on ? 'Turned on' : 'Turned off'} Except URL for ${Games.name(ev.gid)}`;
     case 'mod.game.unpause': return `Resumed connections for ${ev.gid === '*' ? 'all games' : Games.name(ev.gid)}`;
     case 'mod.sub.decide': return ev.decision === 'changes' ? 'Requested changes on a submission' : 'Declined a submission';
     case 'mod.report.resolve': return `Resolved a report${ev.note ? ' · ' + cleanLine(ev.note, 80) : ''}`;
@@ -6683,7 +6690,7 @@ const AdminSections = {
     const reasonRows = inc => Object.entries(inc.reasons).sort((a, b) => b[1] - a[1]).map(([k, v]) => html`<li>${KIT_REASONS[k]} <span class="muted">× ${v}</span></li>`);
     return html`<p class="dim small mb">Void windows inside games report a Connection Kit that fails its checks: a modified kit, forged or replayed messages, or kit traffic from a website that isn't on the game's page. Alerts are sealed so only moderators can read them. While an incident is active (an alert in the last ${Math.round(KIT_ACTIVE / 60000 * 10) / 10} minutes), you're notified every 2 minutes.</p>
       ${list.length ? list.map(inc => { const on = KitWatch.active(inc), g = Games.get(inc.gid); return html`<article class="card pad mb"><div class="hstack wrapf" style="justify-content:space-between"><h3 class="sec-title" style="margin:0">${icon('alert', 18)} ${g ? html`<a href="#/game/${g.id}">${inc.gname}</a>` : inc.gname}</h3><span class="badge ${on ? 'bad' : ''}">${on ? 'Active' : 'Quiet'}</span></div>
-        <dl class="info-list small mt"><dt>Game ID</dt><dd><span class="mono">${inc.gid}</span>${g ? '' : html` <span class="badge">not listed now</span>`}${Mod.pauseOf(inc.gid) ? html` <span class="badge warn">Paused</span>` : ''}</dd>
+        <dl class="info-list small mt"><dt>Game ID</dt><dd><span class="mono">${inc.gid}</span>${g ? '' : html` <span class="badge">not listed now</span>`}${Mod.pauseOf(inc.gid) ? html` <span class="badge warn">Paused</span>` : ''}${Mod.excepted(inc.gid) ? html` <span class="badge warn">URL excepted</span>` : ''}</dd>
           <dt>ID sent by kit</dt><dd>${inc.claimed.size ? [...inc.claimed].map(x => html`<span class="mono">${x}</span>${x !== inc.gid ? html` <span class="badge bad">doesn't match</span>` : ''} `) : html`<span class="muted">not seen</span>`}</dd>
           <dt>Website</dt><dd>${[...inc.origins].join(', ') || 'unknown'}</dd>
           <dt>Page</dt><dd style="overflow-wrap:anywhere">${inc.pages.size ? [...inc.pages].join(', ') : html`<span class="muted">hidden by the browser</span>`}</dd>
@@ -6724,8 +6731,8 @@ const AdminSections = {
     const pzText = p => (p.until ? 'until ' + fmtFull(p.until) : 'until resumed') + ' · by ' + p.by + (p.reason ? ' · ' + p.reason : '');
     return html`<div class="hstack mb wrapf"><p class="muted small" style="flex:1;min-width:220px">Built-in games ship inside this file. Approved games are signed records that sync to every device. Pausing a game stops its Connection Kit windows from connecting without hiding the listing.</p>${allP ? html`<button class="btn sm ok" data-act="unpauseGame" data-gid="*">${icon('play', 15)} Resume all games</button>` : html`<button class="btn sm danger" data-act="pauseGame" data-gid="*">${icon('pause', 15)} Pause all games</button>`}<button class="btn sm" data-act="exportRegistry">${icon('download', 15)} Export registry</button></div>
       ${allP ? html`<div class="callout warn mb">${icon('pause', 18)}<div><b>Connections are paused for every game</b> ${pzText(allP)}.</div></div>` : ''}
-      <div class="card table-wrap"><table class="table"><thead><tr><th>Game</th><th>Source</th><th>Playing</th><th>Status</th><th style="text-align:right">Actions</th></tr></thead><tbody>${list.map(g => html`<tr><td><div class="hstack">${gthumb(g, 'sm')}<div><b>${g.name}</b><div class="muted tiny mono">${g.id}</div></div></div></td><td>${g.builtin ? 'Built in' : 'Approved'}${g.approvedAt ? html`<div class="muted tiny">${fmtDate(g.approvedAt)}</div>` : ''}</td><td>${Presence.countInGame(g.id)}</td><td>${g.hidden ? html`<span class="badge bad">Hidden</span>` : html`<span class="badge ok">Live</span>`}${g.featured ? html` <span class="badge accent">Featured</span>` : ''}${(() => { const p = Mod.state.paused.get(g.id); return p && Mod.pauseOf(g.id) === p ? html` <span class="badge warn" title="${pzText(p)}">${icon('pause', 12)} Paused</span>` : allP ? html` <span class="badge warn">Paused (all)</span>` : ''; })()}</td>
-        <td style="text-align:right;white-space:nowrap"><button class="btn sm ghost" data-act="featureGame" data-gid="${g.id}">${icon('star', 14, g.featured)} ${g.featured ? 'Unfeature' : 'Feature'}</button><button class="btn sm ghost" data-act="editGame" data-gid="${g.id}">${icon('edit', 14)} Edit</button>${(() => { const p = Mod.state.paused.get(g.id); return p && Mod.pauseOf(g.id) === p ? html`<button class="btn sm ok" data-act="unpauseGame" data-gid="${g.id}">${icon('play', 14)} Resume</button>` : html`<button class="btn sm ghost" data-act="pauseGame" data-gid="${g.id}">${icon('pause', 14)} Pause</button>`; })()}${g.hidden ? html`<button class="btn sm" data-act="restoreGame" data-gid="${g.id}">Restore</button>` : html`<button class="btn sm danger" data-act="hideGame" data-gid="${g.id}">Hide</button>`}</td></tr>`)}</tbody></table></div>`;
+      <div class="card table-wrap"><table class="table"><thead><tr><th>Game</th><th>Source</th><th>Playing</th><th>Status</th><th style="text-align:right">Actions</th></tr></thead><tbody>${list.map(g => html`<tr><td><div class="hstack">${gthumb(g, 'sm')}<div><b>${g.name}</b><div class="muted tiny mono">${g.id}</div></div></div></td><td>${g.builtin ? 'Built in' : 'Approved'}${g.approvedAt ? html`<div class="muted tiny">${fmtDate(g.approvedAt)}</div>` : ''}</td><td>${Presence.countInGame(g.id)}</td><td>${g.hidden ? html`<span class="badge bad">Hidden</span>` : html`<span class="badge ok">Live</span>`}${g.featured ? html` <span class="badge accent">Featured</span>` : ''}${Mod.excepted(g.id) ? html` <span class="badge warn" title="Website and page checks are off for this game">URL excepted</span>` : ''}${(() => { const p = Mod.state.paused.get(g.id); return p && Mod.pauseOf(g.id) === p ? html` <span class="badge warn" title="${pzText(p)}">${icon('pause', 12)} Paused</span>` : allP ? html` <span class="badge warn">Paused (all)</span>` : ''; })()}</td>
+        <td style="text-align:right;white-space:nowrap"><button class="btn sm ghost" data-act="featureGame" data-gid="${g.id}">${icon('star', 14, g.featured)} ${g.featured ? 'Unfeature' : 'Feature'}</button><button class="btn sm ghost" data-act="editGame" data-gid="${g.id}">${icon('edit', 14)} Edit</button>${(() => { const p = Mod.state.paused.get(g.id); return p && Mod.pauseOf(g.id) === p ? html`<button class="btn sm ok" data-act="unpauseGame" data-gid="${g.id}">${icon('play', 14)} Resume</button>` : html`<button class="btn sm ghost" data-act="pauseGame" data-gid="${g.id}">${icon('pause', 14)} Pause</button>`; })()}<button class="btn sm ${Mod.excepted(g.id) ? '' : 'ghost'}" data-act="exceptGame" data-gid="${g.id}" title="Let the kit connect from any website or page">${icon('link', 14)} ${Mod.excepted(g.id) ? 'Stop excepting URL' : 'Except URL'}</button>${g.hidden ? html`<button class="btn sm" data-act="restoreGame" data-gid="${g.id}">Restore</button>` : html`<button class="btn sm danger" data-act="hideGame" data-gid="${g.id}">Hide</button>`}</td></tr>`)}</tbody></table></div>`;
   },
   reports() {
     const all = Reports.list(), tab = this.repTab || 'open';
@@ -6930,6 +6937,11 @@ Object.assign(Actions, {
   },
   decideSub: t => decideSub(t.dataset.sid, t.dataset.d),
   pauseGame: t => openPause(t.dataset.gid),
+  exceptGame: async t => {
+    const gid = t.dataset.gid, on = !Mod.excepted(gid);
+    if (on && !(await confirmBox({ title: `Turn on Except URL for ${Games.name(gid)}?`, text: "Its listed website stays on its page, but Void stops checking which website or page the Connection Kit runs on. Use this when the game runs inside an embed or a host with changing addresses. While it's on, anyone with the original kit can connect using this game's ID, so keep an eye on Kit alerts.", ok: 'Turn on', danger: true }))) return;
+    modAct({ t: 'mod.game.except', gid, on }, on ? 'Except URL is on' : 'Except URL is off');
+  },
   unpauseGame: t => modAct({ t: 'mod.game.unpause', gid: t.dataset.gid }, t.dataset.gid === '*' ? 'Connections resumed for all games' : 'Connections resumed'),
   featureGame: t => { const g = Games.all.get(t.dataset.gid); modAct({ t: 'mod.game.feature', gid: g.id, on: !g.featured }, g.featured ? 'Unfeatured' : 'Featured'); },
   editGame: t => openEditGame(t.dataset.gid),
