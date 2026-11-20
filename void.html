@@ -22,7 +22,7 @@
 </script>
 <style>
 /* =====================================================================
-   VOID 0.1 · styles
+   VOID 0.2 · styles
    Tokens → base → layout → components → views → responsive
    ===================================================================== */
 :root {
@@ -639,6 +639,10 @@ mark.hl { background: color-mix(in srgb, var(--warn) 42%, transparent); color: i
 .log-line .dir { font-weight: 800; margin-right: 6px; }
 .log-line.in .dir { color: var(--info); } .log-line.out .dir { color: var(--ok); } .log-line.err .dir { color: var(--bad); } .log-line.sys .dir { color: var(--warn); }
 .log-line .t { color: var(--text-3); margin-right: 6px; }
+.embed-block { position: fixed; inset: 0; z-index: 9000; display: grid; place-items: center; padding: 16px; background: color-mix(in srgb, var(--bg-0) 94%, transparent); backdrop-filter: blur(4px); }
+.embed-card { max-width: 380px; text-align: center; display: flex; flex-direction: column; gap: 10px; align-items: center; }
+.embed-card h2 { margin: 0; font-size: 1.1rem; }
+.embed-card p { margin: 0; overflow-wrap: anywhere; }
 .sandbox { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 16px; height: calc(100vh - var(--head-h) - 120px); min-height: 460px; }
 .sandbox-frame { position: relative; background: #000; border-radius: var(--r-lg); overflow: hidden; border: 1px solid var(--line); }
 .sandbox-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
@@ -1126,7 +1130,7 @@ var VoidKit = (function voidConnectionKit() {
 
 Void is a social hub for games that runs from a single HTML file. Add the **Void Connection Kit** to your game and players get a Void window inside your game's tab, with cross-game chat, your game's channels and wiki, and public threads. Your game can also share rich presence, activity and achievements.
 
-> **Short version:** host `void.html` somewhere, add `void-connection-kit.js` to your game unchanged, call `VoidKit.connect({ gameId, voidUrl, openKey, openButton })`, test it in **Developers → Sandbox**, then submit your game.
+> **Short version:** add `void-connection-kit.js` to your game unchanged, call `VoidKit.connect({ gameId, voidUrl: 'https://heyimdroid.github.io/void_host-/', openKey, openButton })`, test it in **Developers → Sandbox**, then submit your game. Only games a moderator has approved can connect.
 
 ## How it works
 
@@ -1139,9 +1143,11 @@ Profiles and chats are temporary by design. They live in the player's tab and va
 
 ## Quick start
 
-### 1. Host Void
+### 1. Use the official Void address
 
-Put `void.html` on any HTTPS host (for example GitHub Pages). Its address is your `voidUrl`. A local file can't be embedded in other sites.
+The official Void is hosted on GitHub Pages at [https://heyimdroid.github.io/void_host-/](https://heyimdroid.github.io/void_host-/). Use that address as your `voidUrl`.
+
+Running your own copy of Void instead? Put `void.html` on any HTTPS host and use its address. A local file can't be embedded in other sites.
 
 ### 2. Add the Connection Kit
 
@@ -1158,7 +1164,7 @@ Do not edit, bundle or minify this file. Void checks its exact text, and any cha
 ```js
 const kit = VoidKit.connect({
   gameId: 'your-game-id',                     // your game's ID on Void
-  voidUrl: 'https://example.com/void.html',   // where Void is hosted
+  voidUrl: 'https://heyimdroid.github.io/void_host-/',   // the official Void
   openKey: '',                                // a key that opens Void, e.g. 'F8' or 'KeyV'
   openButton: ''                              // a CSS selector for your own button, e.g. '#void-button'
 });
@@ -1183,6 +1189,8 @@ kit.chat('gg everyone!', 'general');                                         // 
 
 Open **Developers → Sandbox**, load your game's URL and watch every message in the live console. Sandbox traffic never reaches other players. When it works, use **Developers → Submit a game**. A moderator reviews it, and once approved it's listed with its own page, channels, wiki and website links.
 
+Until your game is approved, the Void window inside your game says it can't connect. That's expected: only registered games can connect from their own website. Enter your game's website exactly as it's hosted (for example `https://your-name.github.io/your-game/`), because Void checks it.
+
 ## Kit reference
 
 | Call | What it does |
@@ -1206,9 +1214,18 @@ The Connection Kit is the only code Void accepts a game connection from:
 1. **Integrity check.** When the kit says hello, Void sends a random one-time challenge. The kit answers with a SHA-256 hash of the challenge combined with the exact text of its own code, using its own built-in SHA-256. Void computes the same hash from the official kit. If a single character of the kit was changed, the hashes don't match and Void refuses the connection.
 2. **Signed messages.** Along with the proof, the kit sends Void a random session key. It goes only to Void's window, so other scripts on your page never see it. Every later message carries a signature made with that key plus an increasing sequence number. Messages from any other code on the page, or replayed messages, are rejected.
 3. **Protected from your game's own code.** The kit saves the browser built-ins it needs (hashing, randomness, messaging, timers) the moment it loads. Code that runs later and changes those built-ins can't break or redirect it. That's why the kit must load first.
-4. **Origin check.** Void only accepts the kit from your listed website's origin, or from the origins of the links on your game page.
+4. **Registered games only.** The `gameId` must be the ID of a game a moderator approved, and it must match exactly. Unknown IDs are refused.
+5. **Website and page check.** Void only accepts the kit from your listed website, or from the websites of the links on your game page. When Void can see the page address (always when your game is on the same website as Void, and on other websites when your page sends it), the page also has to be inside one of your listed addresses. A game at `https://your-name.github.io/other-game/` can't use the ID of `https://your-name.github.io/your-game/`.
 
-**Suspicious kit alerts.** If a Void window inside a game sees a kit fail these checks (a modified kit, forged or replayed messages, or kit traffic from a website that isn't listed for your game), it sends a sealed alert that only Void moderators can read. Moderators are notified while it's active. Testing in the Sandbox never sends alerts.
+**Sharing a website with other games** (for example itch.io, or several games on one GitHub Pages account): add this to your page's `<head>` so Void can see which page the kit is on. Without it, Void refuses games on shared websites, because it can't tell them apart.
+
+```html
+<meta name="referrer" content="no-referrer-when-downgrade">
+```
+
+**Suspicious kit alerts.** If a Void window inside a game sees a kit fail these checks (a modified kit, forged or replayed messages, or kit traffic from a website or page that isn't listed for your game), it sends a sealed alert that only Void moderators can read. The alert includes the game ID, the ID the kit sent, the website and page (when visible), the kit version and which checks failed. Moderators are notified while it's active. Testing in the Sandbox never sends alerts.
+
+**Paused connections.** Moderators can temporarily pause connections for one game, or for all games at once. While a game is paused, the Void window in it shows a notice, new connections are refused, and requests fail with the error code `game_paused`. A connected kit also gets an `error` event with that code. Your game keeps running, and Void reconnects by itself when the pause ends.
 
 **What this can't do:** no browser-only system can stop someone who deliberately copies the untouched kit text into their own code, because their browser is fully under their control. The checks above make tampering obvious and break it. Moderator review is the final safeguard.
 
@@ -1646,7 +1663,7 @@ form button:disabled,form input:disabled{opacity:.5;cursor:not-allowed}
 <script>
 'use strict';
 /* =====================================================================
-   VOID 0.1: a single-file, serverless social hub for games.
+   VOID 0.2: a single-file, serverless social hub for games.
    ---------------------------------------------------------------------
    1  Config & constants          9  Submissions & reports
    2  Utilities                  10  Presence, chat, rooms, private threads
@@ -1661,7 +1678,10 @@ form button:disabled,form input:disabled{opacity:.5;cursor:not-allowed}
 /* ---------------------------------------------------------------------
    1 · Config & constants
    --------------------------------------------------------------------- */
-const VOID = { version: '0.2', build: '0.2.0', protocol: '1' };
+const VOID = { version: '0.2', build: '0.2.2', protocol: '1' };
+
+/* The official Void address (GitHub Pages). Games put it in the kit's voidUrl. */
+const VOID_HOME = 'https://heyimdroid.github.io/void_host-/';
 
 /* Relay: your own WebSocket relay (the Cloudflare Worker in void-relay/). Put its address here, e.g.
    'wss://void-relay.your-name.workers.dev'. Every copy of this file, including the Void windows
@@ -2698,6 +2718,7 @@ const Mod = {
   refresh() { this.derive(); Games.derive(); Wiki.reset(); invalidate('mod', 'games', 'wiki', 'subs', 'reports', 'presence', 'rooms', 'chat'); },
   derive() {
     const st = { bans: new Map(), devBans: new Map(), mutes: new Map(), filter: [], filterRe: null, slow: {}, deleted: new Set(), cleared: {}, ann: [], annDel: new Set(), approved: new Map(), removed: new Set(), patches: new Map(), featured: new Map(), subDec: new Map(), repRes: new Map(), closedRooms: new Set(), strictVotes: false, entries: [] };
+    st.paused = new Map();
     const evs = this.log.events().sort((a, b) => a.ts - b.ts || (a.id < b.id ? -1 : 1));
     for (const ev of evs) {
       st.entries.push(ev);
@@ -2718,6 +2739,8 @@ const Mod = {
         case 'mod.game.remove': if (typeof ev.gid === 'string') st.removed.add(ev.gid); break;
         case 'mod.game.restore': st.removed.delete(ev.gid); break;
         case 'mod.game.feature': if (typeof ev.gid === 'string') st.featured.set(ev.gid, !!ev.on); break;
+        case 'mod.game.pause': if (typeof ev.gid === 'string' && (ev.gid === '*' || /^[a-z0-9-]{1,40}$/.test(ev.gid))) st.paused.set(ev.gid, { gid: ev.gid, until: Number(ev.until) || 0, reason: cleanLine(ev.reason, 200), ts: ev.ts, by: who }); break;
+        case 'mod.game.unpause': if (typeof ev.gid === 'string') st.paused.delete(ev.gid); break;
         case 'mod.sub.decide': if (typeof ev.sid === 'string' && ['rejected', 'changes'].includes(ev.decision)) st.subDec.set(ev.sid, { decision: ev.decision, note: cleanText(ev.note, 1000), ts: ev.ts, by: who }); break;
         case 'mod.report.resolve': if (typeof ev.rid === 'string') st.repRes.set(ev.rid, { note: cleanLine(ev.note, 300), action: cleanLine(ev.action, 40), ts: ev.ts, by: who }); break;
         case 'mod.room.close': if (typeof ev.rid === 'string') st.closedRooms.add(ev.rid); break;
@@ -2746,11 +2769,19 @@ const Mod = {
       case 'mod.msg.del': Chat.onModDelete(ev.conv, ev.mid); break;
       case 'mod.clear': Chat.onModClear(ev.conv); break;
       case 'mod.room.close': Rooms.onClosed(ev.rid, true); break;
+      case 'mod.game.pause': case 'mod.game.unpause': Embed.syncPause(); break;
     }
   },
   banOf(id, dev) { const st = this.state; if (!st) return null; const b = st.bans.get(id) || (dev ? st.devBans.get(dev) : null); return b && (!b.until || b.until > now()) ? b : null; },
   muteOf(id, at = now()) { const m = this.state.mutes.get(id); return m && m.until > at ? m : null; },
   slowOf(cid) { return this.state.slow[cid] || 0; },
+  /* An active connection pause for this game (its own, or the "all games" pause), or null. */
+  pauseOf(gid) {
+    const st = this.state; if (!st || !st.paused) return null;
+    const t = now();
+    for (const k of [gid, '*']) { const p = st.paused.get(k); if (p && (!p.until || p.until > t)) return p; }
+    return null;
+  },
   isDeleted(mid) { return this.state.deleted.has(mid); },
   clearedAt(cid) { return this.state.cleared[cid] || 0; },
   filter(text) { const re = this.state && this.state.filterRe; return re ? String(text).replace(re, m => '•'.repeat(Math.min(m.length, 12))) : String(text); },
@@ -3809,8 +3840,9 @@ const KIT_VERSION = '0.1.0';
    original, unmodified kit (challenge → proof), and every later message must carry a valid
    signature (made with the session key from the proof) and an increasing sequence number. */
 class Bridge {
-  constructor({ game, getWin, origins = ['*'], sandbox = false, listed = true, log = null, onConnect = null, onSuspect = null }) {
-    Object.assign(this, { game, getWin, origins, sandbox, listed, log, onConnect, onSuspect });
+  constructor({ game, getWin, origins = ['*'], sandbox = false, listed = true, log = null, onConnect = null, onSuspect = null, gate = null, expectId = null, paused = null }) {
+    Object.assign(this, { game, getWin, origins, sandbox, listed, log, onConnect, onSuspect, gate, expectId, paused });
+    this.gating = false; this.passed = null; this.refused = null;
     this.sus = {};
     this.connected = false; this.nonce = null; this.key = null; this.seq = 0; this.peerOrigin = null;
     this.subs = new Set(['general']); this.achieved = new Set(); this.rl = {}; this.q = Promise.resolve();
@@ -3821,17 +3853,43 @@ class Bridge {
     if (!w || e.source !== w) return false;
     if (this.origins.includes('*') || this.origins.includes(e.origin)) return true;
     /* Kit traffic from a website that isn't on this game's page. */
-    if (e.data && typeof e.data === 'object' && e.data.void === VOID.protocol) this.suspect('bad_origin', e.origin);
+    if (e.data && typeof e.data === 'object' && e.data.void === VOID.protocol) this.suspect('bad_origin', e.origin, { claimed: e.data.gameId, type: e.data.type, detail: 'Kit message from a website that is not listed for this game.' });
     return false;
   }
   /* Reports signs of a tampered or spoofed Connection Kit (see KitWatch). Sandbox runs never report. */
-  suspect(code, origin) {
+  suspect(code, origin, info) {
     if (this.sandbox || !this.onSuspect) return;
     this.sus[code] = (this.sus[code] || 0) + 1;
     if (code === 'ignored' && this.sus[code] < 3) return;   // one stray hello can be a harmless race
-    try { this.onSuspect(code, origin || this.peerOrigin || ''); } catch (e) { console.warn('[void] kit watch', e); }
+    try { this.onSuspect(code, origin || this.peerOrigin || '', Object.assign({ kit: this.kitVer }, info || {})); } catch (e) { console.warn('[void] kit watch', e); }
   }
-  receive(e) { const m = e.data, origin = e.origin; this.q = this.q.then(() => this.handle(m, origin)).catch(err => console.warn('[void] bridge', err)); }
+  receive(e) {
+    const m = e.data, origin = e.origin;
+    /* With a gate (in-game windows), a hello is only answered once the game and page pass its checks. */
+    if (this.gate && !this.connected && m && typeof m === 'object' && m.void === VOID.protocol && m.type === 'hello' && this.passed !== origin) { this.checkGate(m, origin); return; }
+    this.q = this.q.then(() => this.handle(m, origin)).catch(err => console.warn('[void] bridge', err));
+  }
+  async checkGate(m, origin) {
+    if (this.gating) return;
+    if (m.data && m.data.kit) this.kitVer = cleanLine(String(m.data.kit), 16);
+    if (this.refused && !(this.refused.retry && now() - this.refused.at > 5000)) return;   // already refused: stay quiet
+    this.gating = true;
+    let r = null;
+    try {
+      if (this.expectId != null && m.gameId !== this.expectId) r = { code: 'wrong_game', message: `Void refused the connection: this Void window was opened for "${this.expectId}", but the kit says its gameId is "${cleanLine(String(m.gameId), 40)}". The gameId must be exactly your registered game ID.` };
+      else r = await this.gate(m, origin);
+    } catch (e) { r = { code: 'check_failed', retry: true, message: 'Void could not check this game. It will try again.' }; }
+    this.gating = false;
+    if (r) {
+      const changed = !this.refused || this.refused.code !== r.code;
+      this.refused = Object.assign({ at: now() }, r);
+      if (changed) { this.peerOrigin = origin; this.post('error', { code: r.code, message: r.message }); if (this.log) this.log('err', { type: r.code, data: r.message }); }
+      if (r.suspect) this.suspect(r.code, origin, { claimed: m.gameId, type: 'hello', kit: m.data && m.data.kit, detail: r.message });
+      return;
+    }
+    this.refused = null; this.passed = origin;
+    this.q = this.q.then(() => this.handle(m, origin)).catch(err => console.warn('[void] bridge', err));
+  }
   post(type, data, re) {
     const w = this.getWin();
     if (!w) return;
@@ -3866,9 +3924,11 @@ class Bridge {
     const d = m.data && typeof m.data === 'object' ? m.data : {};
     const ok = data => { if (id) this.post('ack', data || {}, id); };
     const fail = (code, message) => { if (id) this.post('error', { code, message }, id); if (this.log) this.log('err', { type: code, data: message }); };
-    const reject = (code, message) => { if (this.log) this.log('err', { type: code, data: message }); this.suspect(code, origin); };
+    const reject = (code, message) => { if (this.log) this.log('err', { type: code, data: message }); this.suspect(code, origin, { claimed: m.gameId, type: m.type, kit: d.kit, detail: message }); };
+    if (this.sandbox && m.type === 'hello' && this.log && m.gameId !== this.game.id) this.log('err', { type: 'gameId mismatch', data: `The kit says gameId "${cleanLine(String(m.gameId), 40)}" but this test runs as "${this.game.id}". Outside the sandbox Void refuses that.` });
     if (m.type === 'hello') {
       if (this.connected) return reject('ignored', 'Already connected: a running session cannot be reset by other code on the page.');
+      if (this.gate && this.passed !== origin) return;
       if (!this.nonce) this.nonce = rid(32);
       this.peerOrigin = origin;
       this.post('challenge', { nonce: this.nonce, kit: KIT_VERSION });
@@ -3877,7 +3937,8 @@ class Bridge {
     if (m.type === 'proof') {
       if (this.connected) return reject('ignored', 'A second proof was sent after the kit connected.');
       if (!this.nonce) return;
-      if (!this.limit('proof', 30, 60000)) { this.suspect('proof_flood', origin); return; }
+      if (this.gate && this.passed !== origin) return reject('bad_origin', 'A proof came from a website that did not pass the game check.');
+      if (!this.limit('proof', 30, 60000)) { this.suspect('proof_flood', origin, { claimed: m.gameId, type: 'proof', kit: d.kit, detail: 'More than 30 proof attempts in a minute.' }); return; }
       const expect = await sha256Hex(this.nonce + '|' + kitFunctionText());
       const good = typeof d.proof === 'string' && ctEqual(TE.encode(d.proof), TE.encode(expect)) && typeof d.key === 'string' && /^[0-9a-f]{64}$/.test(d.key);
       if (!good) {
@@ -3890,11 +3951,15 @@ class Bridge {
       return;
     }
     if (!this.connected) return reject('not_verified', `Ignored "${m.type}": the Connection Kit has not passed its integrity check.`);
+    if (origin !== this.peerOrigin) return reject('bad_origin', `Ignored "${m.type}": it came from a different website than the connected kit.`);
+    if (this.expectId != null && m.gameId !== this.expectId) return reject('wrong_game', `Ignored "${m.type}": the game ID changed on a live connection.`);
     const seq = m.seq;
     if (!Number.isInteger(seq) || seq <= this.seq || seq > this.seq + 10000) return reject('bad_sequence', `Ignored "${m.type}": replayed or out-of-order message.`);
     const mac = await sha256Hex(this.key + '|' + seq + '|' + m.type + '|' + (m.id || '') + '|' + JSON.stringify(m.data === undefined ? {} : m.data));
     if (typeof m.mac !== 'string' || !ctEqual(TE.encode(m.mac), TE.encode(mac))) return reject('bad_signature', `Ignored "${m.type}": it was not signed by the Connection Kit.`);
     this.seq = seq;
+    const pz = this.paused ? this.paused() : null;
+    if (pz) return fail('game_paused', pz);
     try {
       switch (m.type) {
         case 'chat.send': {
@@ -3957,7 +4022,7 @@ class Bridge {
     } catch (e) { fail('error', e && e.message ? e.message : 'Something went wrong.'); }
   }
   deliver(cid, m) {
-    if (!this.connected || this.sandbox || m.sys) return;
+    if (!this.connected || this.sandbox || m.sys || (this.paused && this.paused())) return;
     const ch = this.chanFor(cid);
     if (!ch || !this.subs.has(ch) || Session.isBlocked(m.by) || Mod.isDeleted(m.id)) return;
     this.post('chat.message', { channel: ch, id: m.id, text: Mod.filter(m.text), ts: m.ts, author: { id: m.by, name: m.name, tag: tagOf(m.by), avatar: { emoji: m.av.e, color: m.av.c }, mod: !!m.mod }, via: m.via, game: m.game, gameName: m.game ? Games.name(m.game) : null });
@@ -4247,6 +4312,7 @@ const ICONS = {
   arrowLeft: '<path d="M19 12H5M11 6l-6 6 6 6"/>',
   arrowDown: '<path d="M12 5v14M6 13l6 6 6-6"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.8h.01"/>',
+  pause: '<rect x="6.5" y="5" width="3.5" height="14" rx="1"/><rect x="14" y="5" width="3.5" height="14" rx="1"/>',
   alert: '<path d="M12 3.5 2.5 20h19L12 3.5Z"/><path d="M12 10v4.5M12 17.2h.01"/>',
   thumbUp: '<path d="M7 11v9H4.5v-9H7Z"/><path d="M7 11l3.8-7a2 2 0 0 1 2.7 2.6L12.6 10H19a2 2 0 0 1 2 2.4l-1.2 6A2 2 0 0 1 17.8 20H7"/>',
   thumbDown: '<path d="M7 13V4H4.5v9H7Z"/><path d="M7 13l3.8 7a2 2 0 0 0 2.7-2.6L12.6 14H19a2 2 0 0 0 2-2.4l-1.2-6A2 2 0 0 0 17.8 4H7"/>',
@@ -4601,7 +4667,7 @@ function sideLounge(r) {
 function sideGame(g, r) {
   const w = Wiki.get(g.id), fav = Session.isFav(g.id), rooms = Rooms.list(g.id);
   return [html`<div class="side-title">${gthumb(g, 'sm')}<span style="overflow:hidden;text-overflow:ellipsis">${g.name}</span></div><button class="ibtn ${fav ? 'active' : ''}" data-act="toggleFav" data-gid="${g.id}" data-tip="${fav ? 'Remove from favorites' : 'Add to favorites'}" aria-label="${fav ? 'Remove from favorites' : 'Add to favorites'}" aria-pressed="${fav}">${icon('star', 18, fav)}</button>`, html`
-    <div class="side-game"><a class="btn primary block" href="${g.url}" data-ext target="_blank" rel="noopener noreferrer" data-fk="site-${g.id}">${icon('external', 16)} Visit website</a>${Players.count(g.id) ? html`<span class="muted tiny" style="text-align:center">${plural(Players.count(g.id), 'player')} in game right now</span>` : ''}</div>
+    <div class="side-game"><a class="btn primary block" href="${g.url}" data-ext target="_blank" rel="noopener noreferrer" data-fk="site-${g.id}">${icon('external', 16)} Visit website</a>${Mod.pauseOf(g.id) ? html`<span class="muted tiny" style="text-align:center">${icon('pause', 12)} Game connections are paused by moderators</span>` : ''}${Players.count(g.id) ? html`<span class="muted tiny" style="text-align:center">${plural(Players.count(g.id), 'player')} in game right now</span>` : ''}</div>
     ${navItem({ to: 'game/' + g.id, label: 'Overview', ico: 'info', on: r.view === 'game' })}
     ${navItem({ to: 'game/' + g.id + '/wiki', label: 'Wiki', ico: 'book', on: r.view === 'wiki', badge: w ? w.open.length : 0, soft: true, sub: w && w.open.length ? plural(w.open.length, 'change') + ' to vote on' : '' })}
     <div class="side-label">Channels</div>
@@ -5899,6 +5965,15 @@ function openBan(uid, name, dev) {
   });
   $('#bn-go', m.el).addEventListener('click', () => { const dur = Number($('#bn-d', m.el).value); modAct({ t: 'mod.ban', uid, dev: d, target: name, until: dur ? now() + dur : 0, reason: cleanLine($('#bn-r', m.el).value, 200) }, `${name} is banned`); m.close(); });
 }
+function openPause(gid) {
+  const all = gid === '*', name = all ? 'all games' : Games.name(gid);
+  const m = Modal.open({
+    title: `Pause connections for ${name}`, sub: `Void windows inside ${all ? 'every game' : 'this game'} stop connecting: new kit connections are refused, connected ones stop passing chat and requests, and player counts stop. The listing and wiki stay up. Everything resumes by itself when the pause ends.`, size: 'sm',
+    body: html`<div class="field"><label class="label" for="pz-d">For how long?</label><select class="select" id="pz-d">${DURATIONS.map(([ms, l], i) => html`<option value="${ms}" ${i === 1 ? 'selected' : ''}>${l}</option>`)}<option value="0">Until resumed</option></select></div><div class="field" style="margin:0"><label class="label" for="pz-r">Reason <span class="opt">shown in the game's Void window</span></label><input class="input" id="pz-r" maxlength="200" placeholder="e.g. Checking a suspicious Connection Kit"></div>`,
+    foot: html`<button class="btn ghost" data-close>Cancel</button><button class="btn danger" id="pz-go">${icon('pause', 15)} Pause</button>`,
+  });
+  $('#pz-go', m.el).addEventListener('click', () => { const dur = Number($('#pz-d', m.el).value); modAct({ t: 'mod.game.pause', gid, until: dur ? now() + dur : 0, reason: cleanLine($('#pz-r', m.el).value, 200) }, `Connections paused for ${name}`); m.close(); });
+}
 async function endSession(skip) {
   if (!skip && !(await confirmBox({ title: 'End this session?', text: 'Your temporary profile, messages and threads in this tab are deleted right away. Wikis and settings on this device stay.', ok: 'End session', danger: true }))) return;
   try { Presence.bye(); } catch (e) { /* ignore */ }
@@ -5924,20 +5999,118 @@ Object.assign(Actions, {
 const EMBED_GID = (() => { try { if (window.parent === window) return null; const g = new URLSearchParams(location.search).get('game'); return g ? slugify(g) : null; } catch (e) { return null; } })();
 function gameLinks(g) { return [{ label: 'Visit website', url: g.url }, ...arr(g.links)]; }
 function gameOrigins(g) { return [...new Set(gameLinks(g).map(l => originOf(l.url)).filter(Boolean))]; }
+/* Which folder a registered link covers: https://x.github.io/my-game/ and .../my-game/index.html
+   both cover /my-game/. */
+function linkDir(u) {
+  let p = u.pathname || '/';
+  if (!p.endsWith('/')) { const last = p.slice(p.lastIndexOf('/') + 1); p = last.includes('.') ? p.slice(0, p.lastIndexOf('/') + 1) : p + '/'; }
+  return p;
+}
+function pageMatches(g, page) {
+  for (const l of gameLinks(g)) {
+    let u; try { u = new URL(l.url); } catch (e) { continue; }
+    if (u.origin !== page.origin) continue;
+    const dir = linkDir(u);
+    if (page.pathname.startsWith(dir) || page.pathname + '/' === dir) return true;
+  }
+  return false;
+}
+/* Other listed games hosted on the same website (e.g. several games on one itch.io or GitHub Pages host). */
+function sharedSite(g) { const mine = gameOrigins(g); return Games.list().filter(h => h.id !== g.id && gameOrigins(h).some(o => mine.includes(o))); }
+/* Decides whether a kit on `origin` (and, when Void can see it, on `page`) may connect as game g. Returns null or a refusal. */
+function gameAccess(g, origin, page) {
+  const origins = gameOrigins(g);
+  if (!origins.includes(origin)) return { code: 'bad_origin', suspect: true, message: `Void refused the connection: "${g.id}" is registered for ${origins.join(', ') || 'another website'}, not ${origin}.` };
+  if (page) {
+    if (!pageMatches(g, page)) return { code: 'wrong_page', suspect: true, message: `Void refused the connection: ${page.origin}${page.pathname} isn't one of the pages registered for "${g.id}" (${gameLinks(g).map(l => l.url).join(', ')}).` };
+    return null;
+  }
+  if (Games.list().some(h => h.id !== g.id && gameOrigins(h).includes(origin))) return { code: 'page_unverified', message: `${origin} hosts more than one game on Void, so Void has to see which page the kit is on. Add <meta name="referrer" content="no-referrer-when-downgrade"> to the <head> of your game's page.` };
+  return null;
+}
+function pauseMsg(g, p) {
+  return `Void moderators paused connections ${p.gid === '*' ? 'for all games' : 'for ' + (g ? g.name : 'this game')} ${p.until ? 'until ' + fmtFull(p.until) : 'until further notice'}.${p.reason ? ' Reason: ' + p.reason.replace(/[.!?]?$/, m => m || '.') : ''} The Void window reconnects by itself when the pause ends.`;
+}
+function shortUA() {
+  const u = String(navigator.userAgent || ''), m = (re, n) => { const x = re.exec(u); return x ? n + ' ' + x[1] : null; };
+  const b = m(/Edg\/(\d+)/, 'Edge') || m(/OPR\/(\d+)/, 'Opera') || m(/Firefox\/(\d+)/, 'Firefox') || m(/Chrome\/(\d+)/, 'Chrome') || m(/Version\/(\d+)[\d.]* .*Safari/, 'Safari') || 'Unknown browser';
+  const os = /Windows/.test(u) ? 'Windows' : /Android/.test(u) ? 'Android' : /iPhone|iPad/.test(u) ? 'iOS' : /CrOS/.test(u) ? 'ChromeOS' : /Mac OS X/.test(u) ? 'macOS' : /Linux/.test(u) ? 'Linux' : 'unknown OS';
+  return b + ' · ' + os;
+}
 const Embed = {
-  gid: EMBED_GID, bridge: null, verified: false, timer: null,
+  gid: EMBED_GID, bridge: null, verified: false, timer: null, refused: null,
   get game() { return this.gid ? Games.get(this.gid) : null; },
   start() {
     if (!this.gid) return;
     document.documentElement.classList.add('embedded');
-    const g = this.game;
-    const game = g || { id: this.gid, name: this.gid, channels: [{ id: 'general', name: 'general', topic: '' }], features: [] };
-    this.bridge = new Bridge({ game, getWin: () => window.parent, origins: g ? gameOrigins(g) : ['*'], sandbox: !g, listed: !!g, onConnect: () => this.onConnect(), onSuspect: (code, origin) => KitWatch.signal(game, origin, code) });
+    const self = this, fallback = [{ id: 'general', name: 'general', topic: '' }];
+    /* The game list may arrive from the network after this window loads, so read it live. */
+    const game = {
+      id: this.gid,
+      get name() { const g = self.game; return g ? g.name : self.gid; },
+      get channels() { const g = self.game; return (g && g.channels) || fallback; },
+      get features() { const g = self.game; return (g && g.features) || []; },
+    };
+    this.bridge = new Bridge({ game, getWin: () => window.parent, origins: ['*'], expectId: this.gid, gate: (m, origin) => this.check(origin), paused: () => { const g = this.game, p = g && Mod.pauseOf(g.id); return p ? pauseMsg(g, p) : null; }, onConnect: () => this.onConnect(), onSuspect: (code, origin, info) => KitWatch.signal(game, origin, code, Object.assign({ page: this.pageText(origin) }, info)) });
+    setInterval(() => this.syncPause(), 10000);   // pauses end on their own
+  },
+  pageText(origin) {
+    const u = this.pageUrl(origin);
+    if (u) return u.origin + u.pathname;
+    try { return document.referrer ? new URL(document.referrer).origin + ' (path hidden)' : ''; } catch (e) { return ''; }
+  },
+  /* Applies or lifts a moderator pause on this window's game. */
+  syncPause() {
+    if (!this.gid || !this.bridge) return;
+    const g = this.game, p = g ? Mod.pauseOf(g.id) : null;
+    if (p) {
+      if (this.refused && this.refused.code === 'game_paused' && this.refused.ts === p.ts) return;
+      this.refused = { code: 'game_paused', message: pauseMsg(g, p), ts: p.ts };
+      if (this.bridge.connected) this.bridge.post('error', { code: 'game_paused', message: this.refused.message });
+      clearInterval(this.timer); this.timer = null;
+      if (Me.game && Me.game.id === this.gid) Me.setGame(null);
+      this.render();
+    } else if (this.refused && this.refused.code === 'game_paused') {
+      this.refused = null; this.render();
+      if (this.verified) this.onConnect();
+      else if (this.bridge.refused) this.bridge.refused.at = 0;
+    }
+  },
+  /* Waits up to 15 s for the game list (a fresh window gets it from the relay or a linked device). */
+  async waitGame(ms = 15000) {
+    const end = now() + ms;
+    while (!this.game && now() < end) await sleep(250);
+    return this.game;
+  },
+  /* The address of the game page around this window, when the browser lets Void see it. */
+  pageUrl(origin) {
+    try { const u = new URL(window.parent.location.href); if (u.origin === origin) return u; } catch (e) { /* another website: not readable */ }
+    try { if (document.referrer) { const u = new URL(document.referrer); if (u.origin === origin && u.pathname !== '/') return u; } } catch (e) { /* ignore */ }
+    return null;
+  },
+  async check(origin) {
+    const g = await this.waitGame();
+    let r;
+    if (!g) {
+      const online = Relay.state === 'online' || Net.openLinks().length > 0;
+      r = online
+        ? { code: 'game_not_registered', retry: true, message: `Void refused the connection: "${this.gid}" isn't a registered game on Void. Only games approved by a Void moderator can connect. Submit it in Developers → Submit a game, and test it in Developers → Sandbox until then.` }
+        : { code: 'game_unchecked', retry: true, message: `Void couldn't check whether "${this.gid}" is a registered game because it isn't connected to the network yet. It will keep trying.` };
+    } else { const p = Mod.pauseOf(g.id); r = gameAccess(g, origin, this.pageUrl(origin)) || (p ? { code: 'game_paused', retry: true, message: pauseMsg(g, p), ts: p.ts } : null); }
+    this.refused = r; this.render();
+    return r;
+  },
+  render() {
+    let el = document.getElementById('embedBlock');
+    const r = this.refused;
+    if (!r || (this.verified && r.code !== 'game_paused')) { if (el) el.remove(); return; }
+    if (!el) { el = document.createElement('div'); el.id = 'embedBlock'; el.className = 'embed-block'; document.body.appendChild(el); }
+    el.innerHTML = String(html`<div class="card pad embed-card"><span class="empty-ico">${icon(r.code === 'game_unchecked' ? 'globe' : r.code === 'game_paused' ? 'pause' : 'alert', 26)}</span><h2>${r.code === 'game_unchecked' ? 'Checking this game…' : r.code === 'game_paused' ? 'Game connections are paused' : "Void can't connect to this game"}</h2><p class="muted small">${r.message}</p><a class="btn" href="${VOID_HOME}" target="_blank" rel="noopener">${icon('external', 15)} Open Void in a new tab</a></div>`);
+    invalidate('net');
   },
   onConnect() {
-    this.verified = true;
+    this.verified = true; this.refused = null; this.render();
     invalidate('net');
-    if (!this.game) { toastOnce('unlisted', { title: 'Test mode', body: `“${this.gid}” isn't listed on Void yet, so game features stay inside this window.`, icon: 'info', timeout: 8000 }); return; }
     Me.setGame({ id: this.gid, details: '', state: '', since: now() });
     Players.beat();
     clearInterval(this.timer);
@@ -5947,7 +6120,7 @@ const Embed = {
 const Players = {
   map: new Map(),
   on(ev, env) {
-    if (typeof ev.gid !== 'string' || !Games.has(ev.gid) || Mod.banOf(ev.by) || Kick.isKicked(ev.by)) return;
+    if (typeof ev.gid !== 'string' || !Games.has(ev.gid) || Mod.pauseOf(ev.gid) || Mod.banOf(ev.by) || Kick.isKicked(ev.by)) return;
     let m = this.map.get(ev.gid);
     if (!m) { m = new Map(); this.map.set(ev.gid, m); }
     const prev = m.get(ev.by);
@@ -5956,10 +6129,10 @@ const Players = {
     m.set(ev.by, { ts: ev.ts, env: e });
     invalidate('presence');
   },
-  ids(gid) { const m = this.map.get(gid), cut = now() - 150000, out = []; if (m) for (const [id, r] of m) if (r.ts >= cut) out.push(id); return out; },
+  ids(gid) { const m = this.map.get(gid), cut = now() - 150000, out = []; if (m && !Mod.pauseOf(gid)) for (const [id, r] of m) if (r.ts >= cut) out.push(id); return out; },
   count(gid) { return this.ids(gid).length; },
   envs() { const cut = now() - 150000, out = []; for (const m of this.map.values()) for (const r of m.values()) if (r.ts >= cut) out.push(r.env); return out; },
-  beat() { if (Embed.verified && Embed.game) Net.send({ t: 'player', gid: Embed.gid }, { mod: false }).catch(() => {}); },
+  beat() { if (Embed.verified && Embed.game && !Mod.pauseOf(Embed.gid)) Net.send({ t: 'player', gid: Embed.gid }, { mod: false }).catch(() => {}); },
 };
 Net.on('player', (ev, env) => Players.on(ev, env));
 
@@ -5970,17 +6143,21 @@ Net.on('player', (ev, env) => Players.on(ev, env));
 const KIT_REASONS = {
   kit_modified: 'Modified kit (failed the integrity check)', bad_signature: 'Forged messages (bad signature)',
   bad_sequence: 'Replayed or out-of-order messages', not_verified: 'Messages sent before verification',
-  ignored: 'Repeated handshakes on a live connection', proof_flood: 'Flood of proof attempts', bad_origin: 'Kit traffic from an unlisted website',
+  ignored: 'Repeated handshakes on a live connection', proof_flood: 'Flood of proof attempts', bad_origin: 'Kit traffic from an unlisted website', wrong_page: "Kit on a page that isn't registered for this game", wrong_game: 'Game ID changed on a live connection',
 };
 const KIT_ACTIVE = 150000, KIT_REPEAT = 120000;
 const KitWatch = {
   local: null, alerts: new Map(), opened: new Map(), incidents: new Map(), ticker: null,
   /* Window side */
-  signal(game, origin, code) {
+  signal(game, origin, code, info = {}) {
     if (!game || !Games.has(game.id)) return;
     let s = this.local;
-    if (!s) s = this.local = { gid: game.id, gname: game.name, origins: new Set(), reasons: {}, count: 0, first: now(), last: now(), timer: null, sending: false };
+    if (!s) s = this.local = { gid: game.id, gname: game.name, origins: new Set(), reasons: {}, count: 0, first: now(), last: now(), timer: null, sending: false, claimed: new Set(), types: new Set(), kits: new Set(), pages: new Set(), detail: '' };
     if (origin) s.origins.add(String(origin).slice(0, 120));
+    const add = (set, v, n) => { if (set.size < 5 && v != null && v !== '') set.add(cleanLine(String(v), n)); };
+    if ('claimed' in info) add(s.claimed, info.claimed == null || info.claimed === '' ? '(none sent)' : info.claimed, 40);
+    add(s.types, info.type, 24); add(s.kits, info.kit, 16); add(s.pages, info.page, 160);
+    if (info.detail) s.detail = cleanLine(String(info.detail), 300);
     s.reasons[code] = (s.reasons[code] || 0) + 1; s.count++; s.last = now();
     if (!s.timer) { this.report(); s.timer = setInterval(() => this.report(), 60000); }
   },
@@ -5990,7 +6167,9 @@ const KitWatch = {
     s.sending = true;
     try {
       const origins = [...s.origins].slice(0, 5);
-      const sealed = await sealForMods({ kind: 'kit', gid: s.gid, gname: s.gname, origins, reasons: s.reasons, count: s.count, first: s.first, last: s.last, reporter: { id: Me.id, name: Me.profile.name, tag: Me.profile.tag, dev: Device.id } });
+      const sealed = await sealForMods({ kind: 'kit', gid: s.gid, gname: s.gname, origins, reasons: s.reasons, count: s.count, first: s.first, last: s.last, reporter: { id: Me.id, name: Me.profile.name, tag: Me.profile.tag, dev: Device.id },
+        claimed: [...s.claimed], types: [...s.types], kits: [...s.kits], pages: [...s.pages], detail: s.detail,
+        window: { gid: Embed.gid, build: VOID.build, ua: shortUA(), relay: Relay.state, links: Net.openLinks().length, paused: !!Mod.pauseOf(s.gid), hidden: !Games.has(s.gid), verified: Embed.verified } });
       await Net.sendAnon({ t: 'kitalert', sealed });
     } catch (e) { console.warn('[void] kit alert', e); }
     s.sending = false;
@@ -6022,13 +6201,17 @@ const KitWatch = {
       const origins = arr(d.origins).filter(o => typeof o === 'string').map(o => o.slice(0, 120)).slice(0, 5);
       const key = d.gid + '|' + (origins[0] || '');
       let inc = this.incidents.get(key);
-      if (!inc) { inc = { key, gid: d.gid, gname: cleanLine(d.gname, 60) || d.gid, origins: new Set(), reasons: {}, reporters: new Map(), first: a.ev.ts, last: 0, notified: 0, alerts: 0 }; this.incidents.set(key, inc); }
+      if (!inc) { inc = { key, gid: d.gid, gname: cleanLine(d.gname, 60) || d.gid, origins: new Set(), reasons: {}, reporters: new Map(), first: a.ev.ts, last: 0, notified: 0, alerts: 0, claimed: new Set(), types: new Set(), kits: new Set(), pages: new Set(), detail: '' }; this.incidents.set(key, inc); }
       for (const o of origins) inc.origins.add(o);
+      const strs = (v, n) => arr(v).filter(x => typeof x === 'string').slice(0, 5).map(x => cleanLine(x, n)).filter(Boolean);
+      for (const [set, k, n] of [[inc.claimed, 'claimed', 40], [inc.types, 'types', 24], [inc.kits, 'kits', 16], [inc.pages, 'pages', 160]]) for (const x of strs(d[k], n)) if (set.size < 10) set.add(x);
+      if (typeof d.detail === 'string' && d.detail) inc.detail = cleanLine(d.detail, 300);
+      const w = d.window && typeof d.window === 'object' ? d.window : {};
       const r = d.reporter && typeof d.reporter === 'object' ? d.reporter : {};
       const rid_ = typeof r.id === 'string' ? r.id : a.ev.by;
       const reasons = {};
       for (const [k, v] of Object.entries(d.reasons && typeof d.reasons === 'object' ? d.reasons : {})) if (KIT_REASONS[k]) reasons[k] = Math.min(1e6, Number(v) | 0);
-      inc.reporters.set(rid_, { name: cleanLine(r.name, LIMITS.name) || 'Someone', tag: String(r.tag || '').replace(/\D/g, '').slice(0, 4), dev: cleanLine(r.dev, 24), reasons, count: Number(d.count) | 0, ts: a.ev.ts });
+      inc.reporters.set(rid_, { name: cleanLine(r.name, LIMITS.name) || 'Someone', tag: String(r.tag || '').replace(/\D/g, '').slice(0, 4), dev: cleanLine(r.dev, 24), reasons, count: Number(d.count) | 0, ts: a.ev.ts, build: cleanLine(w.build, 16), ua: cleanLine(w.ua, 60), relay: cleanLine(w.relay, 16), links: Number(w.links) | 0, paused: !!w.paused, hidden: !!w.hidden, verified: !!w.verified, win: cleanLine(w.gid, 40) });
       inc.reasons = {};
       for (const rep of inc.reporters.values()) for (const [k, v] of Object.entries(rep.reasons)) inc.reasons[k] = (inc.reasons[k] || 0) + v;
       inc.first = Math.min(inc.first, Number(d.first) || a.ev.ts);
@@ -6051,13 +6234,14 @@ const KitWatch = {
     }
   },
   describe(inc) {
-    const top = Object.entries(inc.reasons).sort((a, b) => b[1] - a[1]).map(([k]) => KIT_REASONS[k].replace(/ \(.*\)$/, '').toLowerCase());
+    const top = Object.entries(inc.reasons).sort((a, b) => b[1] - a[1]).map(([k]) => KIT_REASONS[k].replace(/ \(.*\)$/, '').toLowerCase().replace(/\bid\b/g, 'ID'));
     return top.slice(0, 2).join(', ') || 'failed checks';
   },
   notify(inc) {
     const origin = [...inc.origins][0] || 'an unknown website';
     const title = 'Suspicious Connection Kit · ' + inc.gname;
-    const body = `${this.describe(inc)} from ${origin}. Seen by ${plural(inc.reporters.size, 'player')}. Still active.`;
+    const ids = [...inc.claimed].filter(x => x !== inc.gid);
+    const body = `${this.describe(inc)} from ${origin}, game ID "${inc.gid}"${ids.length ? ' (kit sent "' + ids[0] + '")' : ''}. Seen by ${plural(inc.reporters.size, 'player')}. Still active.`;
     toast({ title, body, tone: 'bad', icon: 'alert', timeout: 15000, actions: [{ label: 'Review', run: () => Router.go('admin/kits') }] });
     Notify.desktop(title, body, 'admin/kits', 'kit-' + inc.key);
     if (Settings.sounds && typeof Sound !== 'undefined') Sound.ping();
@@ -6084,7 +6268,7 @@ const QUICK_SNIPPET = `<\!-- Load the Connection Kit first, unchanged -->
 <script>
   const kit = VoidKit.connect({
     gameId: 'my-game',                          // your game's ID on Void
-    voidUrl: 'https://example.com/void.html',   // where Void is hosted
+    voidUrl: 'https://heyimdroid.github.io/void_host-/',   // the official Void
     openKey: '',                                // e.g. 'F8': opens the Void window
     openButton: ''                              // e.g. '#void-button': your own button
   });
@@ -6172,7 +6356,7 @@ const DevSections = {
           <a class="step" href="#/dev/mine"><span class="step-n">5</span><b>Go live</b><span>Your game gets a page, channels, a wiki and a live player count.</span></a></div></section>
         <section class="card pad"><h2 class="sec-title">${icon('gamepad')} Demo games</h2><p class="muted small mb">Small games with the Connection Kit built in. They only run here, in the sandbox, so you can see how an integration behaves.</p>
           ${DEMO_GAMES.map(g => html`<div class="hstack" style="padding:6px 0">${gthumb(g, 'sm')}<div style="flex:1;min-width:0"><b>${g.name}</b><div class="muted tiny">${g.tagline}</div></div><button class="btn sm" data-act="runDemo" data-demo="${g.demo}">${icon('play', 13, true)} Run</button><button class="btn sm ghost" data-act="dlDemo" data-demo="${g.demo}">${icon('download', 14)} Source</button></div>`)}</section>
-        <section class="card pad"><h2 class="sec-title">${icon('info')} Good to know</h2><ul class="md small" style="margin:0;padding-left:20px;color:var(--text-2)"><li>Host <code>void.html</code> at an https address so games can open it. Its address is the kit's <code>voidUrl</code>.</li><li>Void only accepts the original, unmodified Connection Kit. Don't edit, bundle or minify it.</li><li>Moderators only see your submission once their device syncs with yours. Download the submission file after you submit and send it to them as well.</li></ul></section>
+        <section class="card pad"><h2 class="sec-title">${icon('info')} Good to know</h2><ul class="md small" style="margin:0;padding-left:20px;color:var(--text-2)"><li>The official Void is at <a href="${VOID_HOME}" target="_blank" rel="noopener">${VOID_HOME}</a>. Use it as the kit's <code>voidUrl</code>.</li><li>Only approved games can connect, and only from the website they were submitted with.</li><li>Void only accepts the original, unmodified Connection Kit. Don't edit, bundle or minify it.</li><li>Moderators only see your submission once their device syncs with yours. Download the submission file after you submit and send it to them as well.</li></ul></section>
       </div></div>`);
     },
   },
@@ -6480,6 +6664,8 @@ function describeMod(ev) {
     case 'mod.game.remove': return `Hid ${Games.name(ev.gid)}`;
     case 'mod.game.restore': return `Restored ${Games.name(ev.gid)}`;
     case 'mod.game.feature': return `${ev.on ? 'Featured' : 'Unfeatured'} ${Games.name(ev.gid)}`;
+    case 'mod.game.pause': return `Paused connections for ${ev.gid === '*' ? 'all games' : Games.name(ev.gid)}${ev.until ? ' for ' + fmtDur(ev.until - ev.ts) : ' until resumed'}${ev.reason ? ' · ' + cleanLine(ev.reason, 120) : ''}`;
+    case 'mod.game.unpause': return `Resumed connections for ${ev.gid === '*' ? 'all games' : Games.name(ev.gid)}`;
     case 'mod.sub.decide': return ev.decision === 'changes' ? 'Requested changes on a submission' : 'Declined a submission';
     case 'mod.report.resolve': return `Resolved a report${ev.note ? ' · ' + cleanLine(ev.note, 80) : ''}`;
     case 'mod.room.close': return 'Closed a public thread';
@@ -6497,10 +6683,17 @@ const AdminSections = {
     const reasonRows = inc => Object.entries(inc.reasons).sort((a, b) => b[1] - a[1]).map(([k, v]) => html`<li>${KIT_REASONS[k]} <span class="muted">× ${v}</span></li>`);
     return html`<p class="dim small mb">Void windows inside games report a Connection Kit that fails its checks: a modified kit, forged or replayed messages, or kit traffic from a website that isn't on the game's page. Alerts are sealed so only moderators can read them. While an incident is active (an alert in the last ${Math.round(KIT_ACTIVE / 60000 * 10) / 10} minutes), you're notified every 2 minutes.</p>
       ${list.length ? list.map(inc => { const on = KitWatch.active(inc), g = Games.get(inc.gid); return html`<article class="card pad mb"><div class="hstack wrapf" style="justify-content:space-between"><h3 class="sec-title" style="margin:0">${icon('alert', 18)} ${g ? html`<a href="#/game/${g.id}">${inc.gname}</a>` : inc.gname}</h3><span class="badge ${on ? 'bad' : ''}">${on ? 'Active' : 'Quiet'}</span></div>
-        <p class="small mt"><b>From:</b> ${[...inc.origins].join(', ') || 'unknown website'}</p>
+        <dl class="info-list small mt"><dt>Game ID</dt><dd><span class="mono">${inc.gid}</span>${g ? '' : html` <span class="badge">not listed now</span>`}${Mod.pauseOf(inc.gid) ? html` <span class="badge warn">Paused</span>` : ''}</dd>
+          <dt>ID sent by kit</dt><dd>${inc.claimed.size ? [...inc.claimed].map(x => html`<span class="mono">${x}</span>${x !== inc.gid ? html` <span class="badge bad">doesn't match</span>` : ''} `) : html`<span class="muted">not seen</span>`}</dd>
+          <dt>Website</dt><dd>${[...inc.origins].join(', ') || 'unknown'}</dd>
+          <dt>Page</dt><dd style="overflow-wrap:anywhere">${inc.pages.size ? [...inc.pages].join(', ') : html`<span class="muted">hidden by the browser</span>`}</dd>
+          <dt>Kit version</dt><dd>${inc.kits.size ? [...inc.kits].join(', ') + (inc.kits.has(KIT_VERSION) ? '' : ' (official is ' + KIT_VERSION + ')') : html`<span class="muted">unknown</span>`}</dd>
+          <dt>Messages</dt><dd class="mono">${[...inc.types].join(', ') || 'n/a'}</dd>
+          ${inc.detail ? html`<dt>Last refusal</dt><dd>${inc.detail}</dd>` : ''}</dl>
         <ul class="small dim" style="margin:6px 0 0;padding-left:20px">${reasonRows(inc)}</ul>
+        <details class="mt"><summary class="small muted" style="cursor:pointer">Reporters · ${inc.reporters.size}</summary><div class="small mt">${[...inc.reporters.values()].map(r => html`<div class="feed-item"><div class="feed-text"><b>${r.name}${r.tag ? '#' + r.tag : ''}</b> <span class="muted mono tiny">${r.dev || ''}</span><div class="feed-time">${r.ua || 'unknown browser'} · Void ${r.build || '?'} · relay ${r.relay || '?'}${r.links ? ' · ' + plural(r.links, 'link') : ''}${r.win && r.win !== inc.gid ? ' · window opened for ' + r.win : ''}${r.verified ? ' · a kit was verified in this window' : ''}${r.paused ? ' · game was paused' : ''} · ${plural(r.count, 'failed check')} · ${fmtRel(r.ts)}</div></div></div>`)}</div></details>
         <p class="muted tiny mt">First seen ${fmtRel(inc.first)} · last alert ${fmtRel(inc.last)} · ${plural(inc.alerts, 'alert')} · seen by ${[...inc.reporters.values()].map(r => r.name + (r.tag ? '#' + r.tag : '')).join(', ')}</p>
-        ${g ? html`<div class="hstack wrapf mt"><button class="btn sm" data-act="go" data-to="admin/games">${icon('gamepad', 14)} Manage games</button></div>` : ''}</article>`; }) : emptyState('shieldCheck', 'No suspicious kits', 'Nothing has failed a Connection Kit check while you were signed in. Alerts from the last 10 minutes appear here too.')}`;
+        ${g ? html`<div class="hstack wrapf mt">${Mod.state.paused.get(g.id) && Mod.pauseOf(g.id) ? html`<button class="btn sm ok" data-act="unpauseGame" data-gid="${g.id}">${icon('play', 14)} Resume game</button>` : html`<button class="btn sm danger" data-act="pauseGame" data-gid="${g.id}">${icon('pause', 14)} Pause this game</button>`}<button class="btn sm" data-act="go" data-to="admin/games">${icon('gamepad', 14)} Manage games</button></div>` : ''}</article>`; }) : emptyState('shieldCheck', 'No suspicious kits', 'Nothing has failed a Connection Kit check while you were signed in. Alerts from the last 10 minutes appear here too.')}`;
   },
   dashboard() {
     const st = Mod.state, bans = [...st.bans.values()].filter(b => !b.until || b.until > now()).length;
@@ -6517,7 +6710,7 @@ const AdminSections = {
     return html`<div class="hstack wrapf mb"><div class="seg">${[['pending', 'Waiting', all.filter(s => s.status.s === 'pending').length], ['done', 'Decided', all.filter(s => s.status.s !== 'pending').length]].map(([k, l, n]) => html`<button class="${tab === k ? 'on' : ''}" data-act="adminTab" data-tab="${k}">${l} · ${n}</button>`)}</div><span class="spacer"></span><button class="btn sm" data-act="importSub">${icon('upload', 15)} Import submission file</button></div>
       ${list.length ? list.map(s => {
         const g = s.game, [label, tone] = SUB_STATUS[s.status.s], existing = Games.all.get(g.id);
-        return html`<article class="qitem"><div class="qitem-head">${gthumb(g)}<div style="flex:1;min-width:220px"><div class="hstack wrapf"><b style="font-size:1.08rem">${g.name}</b><span class="badge ${tone}">${label}</span>${existing ? html`<span class="badge info">Updates an existing listing</span>` : ''}</div><div class="muted small">by ${g.dev} · <span class="mono">${g.id}</span> · sent by ${s.name}#${tagOf(s.by)} ${fmtRel(s.ts)}</div></div>
+        return html`<article class="qitem"><div class="qitem-head">${gthumb(g)}<div style="flex:1;min-width:220px"><div class="hstack wrapf"><b style="font-size:1.08rem">${g.name}</b><span class="badge ${tone}">${label}</span>${existing ? html`<span class="badge info">Updates an existing listing</span>` : ''}${(() => { const sh = sharedSite(g); return sh.length ? html`<span class="badge warn" title="Games on a shared website need the referrer tag described in the guide's Security section.">Same website as ${sh.slice(0, 3).map(h => h.name).join(', ')}</span>` : ''; })()}</div><div class="muted small">by ${g.dev} · <span class="mono">${g.id}</span> · sent by ${s.name}#${tagOf(s.by)} ${fmtRel(s.ts)}</div></div>
           ${s.status.s === 'pending' ? html`<div class="hstack wrapf"><button class="btn sm" data-act="testSub" data-sid="${s.id}">${icon('terminal', 14)} Test</button><button class="btn sm ok" data-act="approveSub" data-sid="${s.id}">${icon('check', 14)} Approve</button><button class="btn sm" data-act="decideSub" data-sid="${s.id}" data-d="changes">Request changes</button><button class="btn sm danger" data-act="decideSub" data-sid="${s.id}" data-d="rejected">Decline</button></div>` : html`<span class="muted small">${s.status.by ? 'by ' + s.status.by + ' · ' : ''}${s.status.ts ? fmtRel(s.status.ts) : ''}</span>`}</div>
           <p class="dim">${g.tagline}</p>
           <dl class="info-list"><dt>URL</dt><dd><a href="${g.url}" data-ext target="_blank" rel="noopener noreferrer">${g.url}</a>${g.links.map(l => html` · <a href="${l.url}" data-ext target="_blank" rel="noopener noreferrer">${l.label}</a>`)}</dd><dt>Rating</dt><dd>${RATINGS[g.rating]}</dd><dt>Genres</dt><dd>${g.genres.join(', ') || 'None'}</dd><dt>Features</dt><dd>${g.features.map(f => FEATURES[f]).join(', ') || 'None'}</dd><dt>Channels</dt><dd>${g.channels.map(c => '#' + c.name).join(', ')}</dd><dt>Wiki</dt><dd>${plural(g.wiki.length, 'starter section')}</dd>${s.note ? html`<dt>Note</dt><dd>${s.note}</dd>` : ''}<dt>Contact</dt><dd data-contact="${s.id}">${s.contact ? (ContactCache.has(s.id) ? ContactCache.get(s.id) : 'Decrypting…') : 'Not provided'}</dd></dl>
@@ -6527,9 +6720,12 @@ const AdminSections = {
   },
   games() {
     const list = [...Games.all.values()].sort((a, b) => a.name.localeCompare(b.name));
-    return html`<div class="hstack mb"><p class="muted small" style="flex:1">Built-in games ship inside this file. Approved games are signed records that sync to every device.</p><button class="btn sm" data-act="exportRegistry">${icon('download', 15)} Export registry</button></div>
-      <div class="card table-wrap"><table class="table"><thead><tr><th>Game</th><th>Source</th><th>Playing</th><th>Status</th><th style="text-align:right">Actions</th></tr></thead><tbody>${list.map(g => html`<tr><td><div class="hstack">${gthumb(g, 'sm')}<div><b>${g.name}</b><div class="muted tiny mono">${g.id}</div></div></div></td><td>${g.builtin ? 'Built in' : 'Approved'}${g.approvedAt ? html`<div class="muted tiny">${fmtDate(g.approvedAt)}</div>` : ''}</td><td>${Presence.countInGame(g.id)}</td><td>${g.hidden ? html`<span class="badge bad">Hidden</span>` : html`<span class="badge ok">Live</span>`}${g.featured ? html` <span class="badge accent">Featured</span>` : ''}</td>
-        <td style="text-align:right;white-space:nowrap"><button class="btn sm ghost" data-act="featureGame" data-gid="${g.id}">${icon('star', 14, g.featured)} ${g.featured ? 'Unfeature' : 'Feature'}</button><button class="btn sm ghost" data-act="editGame" data-gid="${g.id}">${icon('edit', 14)} Edit</button>${g.hidden ? html`<button class="btn sm" data-act="restoreGame" data-gid="${g.id}">Restore</button>` : html`<button class="btn sm danger" data-act="hideGame" data-gid="${g.id}">Hide</button>`}</td></tr>`)}</tbody></table></div>`;
+    const allP = Mod.pauseOf('*') && Mod.state.paused.get('*') ? Mod.pauseOf('*') : null;
+    const pzText = p => (p.until ? 'until ' + fmtFull(p.until) : 'until resumed') + ' · by ' + p.by + (p.reason ? ' · ' + p.reason : '');
+    return html`<div class="hstack mb wrapf"><p class="muted small" style="flex:1;min-width:220px">Built-in games ship inside this file. Approved games are signed records that sync to every device. Pausing a game stops its Connection Kit windows from connecting without hiding the listing.</p>${allP ? html`<button class="btn sm ok" data-act="unpauseGame" data-gid="*">${icon('play', 15)} Resume all games</button>` : html`<button class="btn sm danger" data-act="pauseGame" data-gid="*">${icon('pause', 15)} Pause all games</button>`}<button class="btn sm" data-act="exportRegistry">${icon('download', 15)} Export registry</button></div>
+      ${allP ? html`<div class="callout warn mb">${icon('pause', 18)}<div><b>Connections are paused for every game</b> ${pzText(allP)}.</div></div>` : ''}
+      <div class="card table-wrap"><table class="table"><thead><tr><th>Game</th><th>Source</th><th>Playing</th><th>Status</th><th style="text-align:right">Actions</th></tr></thead><tbody>${list.map(g => html`<tr><td><div class="hstack">${gthumb(g, 'sm')}<div><b>${g.name}</b><div class="muted tiny mono">${g.id}</div></div></div></td><td>${g.builtin ? 'Built in' : 'Approved'}${g.approvedAt ? html`<div class="muted tiny">${fmtDate(g.approvedAt)}</div>` : ''}</td><td>${Presence.countInGame(g.id)}</td><td>${g.hidden ? html`<span class="badge bad">Hidden</span>` : html`<span class="badge ok">Live</span>`}${g.featured ? html` <span class="badge accent">Featured</span>` : ''}${(() => { const p = Mod.state.paused.get(g.id); return p && Mod.pauseOf(g.id) === p ? html` <span class="badge warn" title="${pzText(p)}">${icon('pause', 12)} Paused</span>` : allP ? html` <span class="badge warn">Paused (all)</span>` : ''; })()}</td>
+        <td style="text-align:right;white-space:nowrap"><button class="btn sm ghost" data-act="featureGame" data-gid="${g.id}">${icon('star', 14, g.featured)} ${g.featured ? 'Unfeature' : 'Feature'}</button><button class="btn sm ghost" data-act="editGame" data-gid="${g.id}">${icon('edit', 14)} Edit</button>${(() => { const p = Mod.state.paused.get(g.id); return p && Mod.pauseOf(g.id) === p ? html`<button class="btn sm ok" data-act="unpauseGame" data-gid="${g.id}">${icon('play', 14)} Resume</button>` : html`<button class="btn sm ghost" data-act="pauseGame" data-gid="${g.id}">${icon('pause', 14)} Pause</button>`; })()}${g.hidden ? html`<button class="btn sm" data-act="restoreGame" data-gid="${g.id}">Restore</button>` : html`<button class="btn sm danger" data-act="hideGame" data-gid="${g.id}">Hide</button>`}</td></tr>`)}</tbody></table></div>`;
   },
   reports() {
     const all = Reports.list(), tab = this.repTab || 'open';
@@ -6733,6 +6929,8 @@ Object.assign(Actions, {
     modAct({ t: 'mod.game.approve', game: s.game, sub: s.id }, `${s.game.name} is live`);
   },
   decideSub: t => decideSub(t.dataset.sid, t.dataset.d),
+  pauseGame: t => openPause(t.dataset.gid),
+  unpauseGame: t => modAct({ t: 'mod.game.unpause', gid: t.dataset.gid }, t.dataset.gid === '*' ? 'Connections resumed for all games' : 'Connections resumed'),
   featureGame: t => { const g = Games.all.get(t.dataset.gid); modAct({ t: 'mod.game.feature', gid: g.id, on: !g.featured }, g.featured ? 'Unfeatured' : 'Featured'); },
   editGame: t => openEditGame(t.dataset.gid),
   hideGame: async t => { const g = Games.all.get(t.dataset.gid); if (await confirmBox({ title: `Hide ${g.name}?`, text: 'It disappears from the directory for everyone. You can restore it later.', ok: 'Hide', danger: true })) modAct({ t: 'mod.game.remove', gid: g.id }, `${g.name} hidden`); },
@@ -6886,7 +7084,7 @@ function openNetwork(mode = 'overview', code = '') {
         <div class="stat"><span class="stat-top"><span class="stat-label">This browser</span>${icon('sidebar', 16)}</span><span class="stat-num">${tabs}</span><span class="muted tiny">${tabs === 1 ? 'tab' : 'tabs'} connected</span></div>
         <div class="stat"><span class="stat-top"><span class="stat-label">Linked devices</span>${icon('link', 16)}</span><span class="stat-num">${links.length}</span><span class="muted tiny">via Direct Link</span></div>
         <div class="stat"><span class="stat-top"><span class="stat-label">People online</span>${icon('users', 16)}</span><span class="stat-num">${people}</span><span class="muted tiny">including you</span></div>
-        <div class="stat"><span class="stat-top"><span class="stat-label">Game connection</span>${icon('gamepad', 16)}</span><span class="stat-num" style="font-size:1.1rem;padding:8px 0">${Embed.gid ? (Embed.game ? Embed.game.name : Embed.gid) : 'None'}</span><span class="muted tiny">${Embed.gid ? (Embed.verified ? 'Connection Kit verified' : 'Waiting for the kit') : 'Void is not open inside a game'}</span></div></div>
+        <div class="stat"><span class="stat-top"><span class="stat-label">Game connection</span>${icon('gamepad', 16)}</span><span class="stat-num" style="font-size:1.1rem;padding:8px 0">${Embed.gid ? (Embed.game ? Embed.game.name : Embed.gid) : 'None'}</span><span class="muted tiny">${Embed.gid ? (Embed.verified ? 'Connection Kit verified' : Embed.refused ? 'Refused: ' + Embed.refused.code.replace(/_/g, ' ') : 'Waiting for the kit') : 'Void is not open inside a game'}</span></div></div>
         <section class="card pad mb"><h3 class="sec-title">${icon('globe')} Relay <span class="badge ${Relay.state === 'online' ? 'ok' : Relay.target() ? 'warn' : ''}">${Relay.label()}</span></h3><p class="small dim mb">A relay passes Void's signed messages between everyone connected to it, so Void windows inside games, other browsers and other devices all reach each other. It can't read private chats or forge anything: every message is still signed and checked here.</p>
           <div class="hstack wrapf"><input class="input" id="nv-relay" style="flex:1;min-width:220px" placeholder="${RELAY_DEFAULT || 'wss://void-relay.your-name.workers.dev'}" value="${st.relay != null ? st.relay : Settings.relayUrl}" aria-label="Relay address" spellcheck="false" autocomplete="off"><button class="btn" data-nm="relaySave">${icon('check', 15)} Save</button><button class="btn ghost" data-nm="relayToggle">${Settings.relayOff ? 'Turn on' : 'Turn off'}</button></div>
           <p class="muted tiny mt">${RELAY_DEFAULT ? html`Leave the box empty to use this copy's built-in relay (${RELAY_DEFAULT}).` : html`This copy of Void has no built-in relay. Paste a relay address starting with wss://.`}${Relay.state === 'online' ? html` Connected ${fmtRel(Relay.since)}.` : Relay.lastError ? html` ${Relay.lastError}` : ''} The relay sees your IP address and when you're online.</p></section>
